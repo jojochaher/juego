@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0e0e12">
+<meta name="theme-color" content="#0a0a0d">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,30 +13,39 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
   html, body {
-    margin: 0; height: 100%; background: #0e0e12; overflow: hidden;
+    margin: 0; height: 100%; background: #0a0a0d; overflow: hidden;
     overscroll-behavior: none; touch-action: none;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: system-ui, -apple-system, sans-serif; color: #fff;
   }
   canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; }
+  #start {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: #0a0a0d; z-index: 2; text-align: center; padding: 24px;
+  }
+  #start b { font-size: 22px; font-weight: 600; }
+  #start span { font-size: 14px; color: rgba(255,255,255,0.5); max-width: 280px; line-height: 1.4; }
   #hint {
     position: fixed; left: 0; right: 0; bottom: calc(28px + env(safe-area-inset-bottom));
-    text-align: center; color: rgba(255,255,255,0.7); font-size: 15px;
-    pointer-events: none; transition: opacity 0.6s;
-    text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    text-align: center; color: rgba(255,255,255,0.7); font-size: 14px; line-height: 1.5;
+    pointer-events: none; transition: opacity 0.8s; text-shadow: 0 1px 4px #000; padding: 0 20px;
   }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 0.35s; }
   #ver {
     position: fixed; left: 10px; bottom: calc(8px + env(safe-area-inset-bottom));
-    color: rgba(255,255,255,0.25); font-size: 11px; pointer-events: none;
+    color: rgba(255,255,255,0.25); font-size: 11px; pointer-events: none; z-index: 3;
   }
-  #cam { display: none; }
+  video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">tocá una pared vacía para sacarle una foto</div>
+<video id="vid" playsinline muted autoplay></video>
+<div id="hint"></div>
+<div id="flash"></div>
+<div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
-<input id="cam" type="file" accept="image/*" capture="environment">
 <script src="game.js"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

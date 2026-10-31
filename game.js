@@ -1,346 +1,386 @@
-// juego — v2: cuarto de fotos
-// Estás parado en el medio de un cuarto. Girás con el pulgar.
-// Tocás una superficie vacía, sacás una foto y pasa a ser esa superficie.
-// Mantener apretada una superficie con foto la vuelve a sacar.
-const VERSION = 'v2';
+// juego — v3: museo en el vacío
+// Mirás girando el celu (giroscopio). Mantenés apretado para caminar hacia donde mirás.
+// Frente a vos flota un rectángulo con lo que ve la cámara. Tocás: la foto queda fija ahí.
+// Arrastrar de costado gira el mundo (para acomodarlo si arrancó torcido).
+const VERSION = 'v3';
 document.getElementById('ver').textContent = VERSION;
 
 const canvas = document.getElementById('c');
-const cam = document.getElementById('cam');
+const video = document.getElementById('vid');
 const hint = document.getElementById('hint');
+const flash = document.getElementById('flash');
+const startEl = document.getElementById('start');
 const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
 
-// --- geometría del cuarto: x derecha, y arriba, z hacia atrás (arrancás mirando -z) ---
-const D = 1;           // medio ancho / media profundidad
-const HH = 4 / 3;      // medio alto: el cuarto es más alto que ancho, las fotos verticales entran casi enteras
-const FOVX = 70 * Math.PI / 180;
+// --- unidades: metros. x derecha, y arriba, arrancás mirando -z ---
+const EYE = 1.6;
+const FOVX = 50 * Math.PI / 180; // campo horizontal; el vertical sale de la pantalla
+const WALK = 1.4;          // m/s
+const PREVIEW_DIST = 1.0;  // a qué distancia flota el rectángulo
+const PREVIEW_FRAC = 0.58; // el rectángulo ocupa ~58% del ancho de la pantalla
+const pos = [0, EYE, 0];
 
-// cada cara: centro, "derecha" y "arriba" tal como la ves parado mirándola de frente.
-// techo/piso: la parte de arriba de la foto queda donde queda el borde de arriba del celu
-// cuando lo inclinás para apuntar (techo: hacia atrás, piso: hacia adelante).
-const FACES = [
-  { id: 'frente',    c: [0, 0, -D], r: [1, 0, 0],  u: [0, 1, 0],  w: 2 * D, h: 2 * HH, shade: 1.0 },
-  { id: 'derecha',   c: [D, 0, 0],  r: [0, 0, 1],  u: [0, 1, 0],  w: 2 * D, h: 2 * HH, shade: 0.9 },
-  { id: 'atras',     c: [0, 0, D],  r: [-1, 0, 0], u: [0, 1, 0],  w: 2 * D, h: 2 * HH, shade: 0.96 },
-  { id: 'izquierda', c: [-D, 0, 0], r: [0, 0, -1], u: [0, 1, 0],  w: 2 * D, h: 2 * HH, shade: 0.9 },
-  { id: 'techo',     c: [0, HH, 0], r: [1, 0, 0],  u: [0, 0, 1],  w: 2 * D, h: 2 * D,  shade: 1.04 },
-  { id: 'piso',      c: [0, -HH, 0], r: [1, 0, 0], u: [0, 0, -1], w: 2 * D, h: 2 * D,  shade: 0.8 },
-];
-const byId = Object.fromEntries(FACES.map(f => [f.id, f]));
-
-// --- shaders ---
-const vs = `
-attribute vec3 p; attribute vec2 uv;
-uniform mat4 m; varying vec2 v;
-void main() { v = uv; gl_Position = m * vec4(p, 1.0); }`;
-const fs = `
-precision mediump float;
-uniform sampler2D t; uniform float shade; varying vec2 v;
-void main() { vec4 c = texture2D(t, v); gl_FragColor = vec4(c.rgb * shade, 1.0); }`;
-function sh(type, src) {
-  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
-  return s;
-}
-const prog = gl.createProgram();
-gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
-gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
-gl.linkProgram(prog);
-gl.useProgram(prog);
-const aP = gl.getAttribLocation(prog, 'p'), aUV = gl.getAttribLocation(prog, 'uv');
-const uM = gl.getUniformLocation(prog, 'm'), uShade = gl.getUniformLocation(prog, 'shade');
-
-// un quad por cara (un pelito más grande para que no se vean rendijas en las esquinas)
-const GROW = 1.003;
-for (const f of FACES) {
-  const hw = f.w / 2 * GROW, hh = f.h / 2 * GROW;
-  const pt = (sx, sy) => [0, 1, 2].map(i => f.c[i] + f.r[i] * hw * sx + f.u[i] * hh * sy);
-  // arriba-izq, arriba-der, abajo-izq, abajo-der  (uv 0,0 = arriba-izq de la imagen)
-  const data = [
-    ...pt(-1, 1), 0, 0,  ...pt(1, 1), 1, 0,  ...pt(-1, -1), 0, 1,
-    ...pt(1, 1), 1, 0,   ...pt(1, -1), 1, 1, ...pt(-1, -1), 0, 1,
+// ---------- vectores y cuaterniones ----------
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+function qmul(a, b) { // [x,y,z,w]
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
   ];
-  f.buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, f.buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
-  f.tex = gl.createTexture();
-  setTexture(f, emptyCanvas(f));
+}
+function qrot(q, v) {
+  const p = qmul(qmul(q, [v[0], v[1], v[2], 0]), [-q[0], -q[1], -q[2], q[3]]);
+  return [p[0], p[1], p[2]];
+}
+function qaxis(ax, ang) { const s = Math.sin(ang / 2); return [ax[0] * s, ax[1] * s, ax[2] * s, Math.cos(ang / 2)]; }
+
+// ---------- orientación ----------
+let gyro = null;        // último deviceorientation {a,b,g}
+let gyroMode = false;
+let yawOffset = 0;      // giro manual del mundo (arrastrando)
+let lookYaw = 0, lookPitch = 0; // modo sin giroscopio (compu / tests)
+
+window.addEventListener('deviceorientation', e => {
+  if (e.alpha == null) return;
+  gyro = { a: e.alpha, b: e.beta, g: e.gamma };
+  gyroMode = true;
+});
+
+function screenAngle() {
+  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
 }
 
-function setTexture(f, src) {
-  gl.bindTexture(gl.TEXTURE_2D, f.tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+// orientación de la cámara como cuaternión (misma matemática que DeviceOrientationControls de three.js)
+function orientation() {
+  let q;
+  if (gyroMode && gyro) {
+    const R = Math.PI / 180;
+    const x = gyro.b * R, y = gyro.a * R, z = -gyro.g * R; // euler YXZ
+    const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
+    const s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2);
+    q = [s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 - s1 * s2 * c3, c1 * c2 * c3 + s1 * s2 * s3];
+    q = qmul(q, [-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);          // la cámara mira por la espalda del celu
+    q = qmul(q, qaxis([0, 0, 1], -screenAngle() * R));
+  } else {
+    q = qmul(qaxis([0, 1, 0], -lookYaw * Math.PI / 180), qaxis([1, 0, 0], lookPitch * Math.PI / 180));
+  }
+  return qmul(qaxis([0, 1, 0], yawOffset), q);
 }
 
-function texSize(f) {
-  const w = 1024;
-  return [w, Math.round(w * f.h / f.w)];
+function basis() {
+  const q = orientation();
+  return { f: qrot(q, [0, 0, -1]), u: qrot(q, [0, 1, 0]), r: qrot(q, [1, 0, 0]) };
 }
 
-function emptyCanvas(f) {
-  const [w, h] = texSize(f);
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const x = c.getContext('2d');
-  x.fillStyle = '#26262e'; x.fillRect(0, 0, w, h);
-  x.strokeStyle = 'rgba(255,255,255,0.18)'; x.lineWidth = 6; x.setLineDash([24, 18]);
-  x.strokeRect(14, 14, w - 28, h - 28);
-  x.setLineDash([]);
-  x.strokeStyle = 'rgba(255,255,255,0.35)'; x.lineWidth = 10; x.lineCap = 'round';
-  x.beginPath();
-  x.moveTo(w / 2 - 50, h / 2); x.lineTo(w / 2 + 50, h / 2);
-  x.moveTo(w / 2, h / 2 - 50); x.lineTo(w / 2, h / 2 + 50);
-  x.stroke();
-  return c;
-}
-
-// recorta la foto tipo "cover" a la proporción de la cara
-function coverCanvas(f, img) {
-  const [w, h] = texSize(f);
-  const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-  const k = Math.max(w / iw, h / ih);
-  const dw = iw * k, dh = ih * k;
-  c.getContext('2d').drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-  return c;
-}
-
-// --- cámara virtual ---
-let yaw = 0, pitch = 0, vyaw = 0, vpitch = 0;
-let W = 1, H = 1, DPR = 1;
+// ---------- GL ----------
+let W = 1, H = 1;
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
-  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
   gl.viewport(0, 0, canvas.width, canvas.height);
 }
 window.addEventListener('resize', resize);
 resize();
 
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const norm = a => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; };
-
-function basis() {
-  const y = yaw * Math.PI / 180, p = pitch * Math.PI / 180;
-  const f = [Math.sin(y) * Math.cos(p), Math.sin(p), -Math.cos(y) * Math.cos(p)];
-  const r = norm(cross(f, [0, 1, 0]));
-  const u = cross(r, f);
-  return { f, r, u };
-}
-function tanHalf() {
-  const tx = Math.tan(FOVX / 2);
-  return [tx, tx * H / W];
+function program(vs, fs) {
+  const p = gl.createProgram();
+  for (const [t, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  return p;
 }
 
-function matrix() {
-  const { f, r, u } = basis();
-  const [tx, ty] = tanHalf();
-  const n = 0.05, fa = 20;
-  // proyección * vista (columna mayor)
+// cuadros (fotos, vista previa, marco)
+const quadProg = program(`
+attribute vec3 p; attribute vec2 uv; uniform mat4 m; varying vec2 v;
+void main() { v = uv; gl_Position = m * vec4(p, 1.0); }`, `
+precision mediump float; uniform sampler2D t; uniform vec3 tint; varying vec2 v;
+void main() { gl_FragColor = vec4(texture2D(t, v).rgb * tint, 1.0); }`);
+const Q = {
+  p: gl.getAttribLocation(quadProg, 'p'), uv: gl.getAttribLocation(quadProg, 'uv'),
+  m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'),
+};
+
+// puntitos del piso (para sentir que te movés)
+const dotProg = program(`
+attribute vec3 p; uniform mat4 m; uniform vec3 eye; varying float a;
+void main() {
+  gl_Position = m * vec4(p, 1.0);
+  float d = distance(p, eye);
+  a = clamp(1.0 - d / 12.0, 0.0, 1.0);
+  gl_PointSize = clamp(30.0 / d, 2.0, 14.0);
+}`, `
+precision mediump float; varying float a;
+void main() {
+  float r = length(gl_PointCoord - 0.5);
+  if (r > 0.5) discard;
+  gl_FragColor = vec4(vec3(1.0), a * 0.5);
+}`);
+const DP = {
+  p: gl.getAttribLocation(dotProg, 'p'), m: gl.getUniformLocation(dotProg, 'm'), eye: gl.getUniformLocation(dotProg, 'eye'),
+};
+const GRID = 12; // ±12 m alrededor tuyo, 1 punto por metro
+const dotBuf = gl.createBuffer();
+const dotData = new Float32Array((GRID * 2 + 1) ** 2 * 3);
+
+function texture(src) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  if (src) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
+  return t;
+}
+const white = texture(null);
+const videoTex = texture(null);
+
+// un cuadro: centro c, vectores r/u (unitarios), ancho w, alto h
+function quadData(c, r, u, w, h) {
+  const pt = (sx, sy) => add(c, add(mul(r, w / 2 * sx), mul(u, h / 2 * sy)));
+  return new Float32Array([
+    ...pt(-1, 1), 0, 0, ...pt(1, 1), 1, 0, ...pt(-1, -1), 0, 1,
+    ...pt(1, 1), 1, 0, ...pt(1, -1), 1, 1, ...pt(-1, -1), 0, 1,
+  ]);
+}
+const scratch = gl.createBuffer();
+function drawQuad(buf, data, tex, tint) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  if (data) gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(Q.p); gl.vertexAttribPointer(Q.p, 3, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(Q.uv); gl.vertexAttribPointer(Q.uv, 2, gl.FLOAT, false, 20, 12);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform3fv(Q.tint, tint);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function tans() { const tx = Math.tan(FOVX / 2); return [tx, tx * H / W]; }
+
+function matrix(b) {
+  const { f, r, u } = b;
+  const [tx, ty] = tans();
+  const n = 0.03, fa = 200;
   const A = (fa + n) / (n - fa), B = 2 * fa * n / (n - fa);
   const sx = 1 / tx, sy = 1 / ty;
-  // filas de la vista: r, u, -f
   return new Float32Array([
-    sx * r[0], sy * u[0], A * -f[0], f[0],
-    sx * r[1], sy * u[1], A * -f[1], f[1],
-    sx * r[2], sy * u[2], A * -f[2], f[2],
-    0,         0,         B,         0,
+    sx * r[0], sy * u[0], -A * f[0], f[0],
+    sx * r[1], sy * u[1], -A * f[1], f[1],
+    sx * r[2], sy * u[2], -A * f[2], f[2],
+    -sx * dot(r, pos), -sy * dot(u, pos), A * dot(f, pos) + B, -dot(f, pos),
   ]);
 }
 
-// qué cara hay debajo de un punto de la pantalla
-function faceAt(x, y) {
-  const { f, r, u } = basis();
-  const [tx, ty] = tanHalf();
-  const nx = (x / W) * 2 - 1, ny = 1 - (y / H) * 2;
-  const d = [0, 1, 2].map(i => f[i] + r[i] * nx * tx + u[i] * ny * ty);
-  const t = [D / Math.abs(d[0]), HH / Math.abs(d[1]), D / Math.abs(d[2])];
-  const axis = t.indexOf(Math.min(...t));
-  if (axis === 0) return d[0] > 0 ? 'derecha' : 'izquierda';
-  if (axis === 1) return d[1] > 0 ? 'techo' : 'piso';
-  return d[2] < 0 ? 'frente' : 'atras';
+// ---------- obras (fotos fijas en el espacio) ----------
+const works = []; // {id, c, r, u, w, h, tex, buf}
+
+function addWork(o, img) {
+  const w = { ...o, tex: texture(img), buf: gl.createBuffer() };
+  gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
+  gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h), gl.STATIC_DRAW);
+  works.push(w);
 }
 
-function draw() {
-  gl.clearColor(0.055, 0.055, 0.07, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.uniformMatrix4fv(uM, false, matrix());
-  for (const f of FACES) {
-    gl.bindBuffer(gl.ARRAY_BUFFER, f.buf);
-    gl.enableVertexAttribArray(aP);
-    gl.vertexAttribPointer(aP, 3, gl.FLOAT, false, 20, 0);
-    gl.enableVertexAttribArray(aUV);
-    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 20, 12);
-    gl.bindTexture(gl.TEXTURE_2D, f.tex);
-    gl.uniform1f(uShade, f.shade);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-  }
+// rectángulo de vista previa: dónde está ahora mismo
+function previewPose(b) {
+  const vw = video.videoWidth || 3, vh = video.videoHeight || 4;
+  const [tx, ty] = tans();
+  let w = 2 * PREVIEW_DIST * tx * PREVIEW_FRAC, h = w * vh / vw;
+  const maxH = 2 * PREVIEW_DIST * ty * 0.42;
+  if (h > maxH) { h = maxH; w = h * vw / vh; }
+  return { c: add(pos, mul(b.f, PREVIEW_DIST)), r: b.r, u: b.u, w, h };
 }
 
-// --- fotos guardadas (solo en el celu, IndexedDB) ---
+// ---------- guardado (solo en el celu) ----------
 const db = new Promise((res, rej) => {
-  const r = indexedDB.open('juego', 1);
-  r.onupgradeneeded = () => r.result.createObjectStore('fotos');
+  const r = indexedDB.open('juego', 2);
+  r.onupgradeneeded = () => {
+    if (!r.result.objectStoreNames.contains('obras')) r.result.createObjectStore('obras', { keyPath: 'id' });
+  };
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
 });
-async function savePhoto(id, blob) {
+async function store(mode, fn) {
   const d = await db;
   return new Promise((res, rej) => {
-    const tx = d.transaction('fotos', 'readwrite');
-    tx.objectStore('fotos').put(blob, id);
-    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    const tx = d.transaction('obras', mode);
+    const out = fn(tx.objectStore('obras'));
+    tx.oncomplete = () => res(out && out.result); tx.onerror = () => rej(tx.error);
   });
 }
-async function loadPhotos() {
-  const d = await db;
-  return new Promise((res, rej) => {
-    const out = {};
-    const tx = d.transaction('fotos', 'readonly');
-    const req = tx.objectStore('fotos').openCursor();
-    req.onsuccess = () => {
-      const c = req.result;
-      if (c) { out[c.key] = c.value; c.continue(); } else res(out);
-    };
-    req.onerror = () => rej(req.error);
-  });
-}
-
-async function blobToImage(blob) {
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    return img;
-  } finally {
+async function loadWorks() {
+  const all = await store('readonly', s => s.getAll());
+  for (const o of all || []) {
+    const url = URL.createObjectURL(o.blob);
+    const img = new Image(); img.src = url;
+    try { await img.decode(); addWork(o, img); } catch (e) {}
     URL.revokeObjectURL(url);
   }
 }
 
-const filled = new Set();
-async function applyPhoto(id, blob) {
-  const f = byId[id];
-  if (!f) return;
-  const img = await blobToImage(blob);
-  setTexture(f, coverCanvas(f, img));
-  filled.add(id);
-  updateHint();
-}
-
-function updateHint() { hint.style.opacity = filled.size === 0 ? 1 : 0; }
-
-// achica la foto antes de guardarla (las de 12MP ocupan mucho y no hacen falta)
-async function shrink(file, maxSide = 1600) {
-  const img = await blobToImage(file);
-  const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
-  const c = document.createElement('canvas');
-  c.width = Math.round(img.naturalWidth * k);
-  c.height = Math.round(img.naturalHeight * k);
-  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-  return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
-}
-
-let target = null;
-cam.addEventListener('change', async () => {
-  const file = cam.files && cam.files[0];
-  cam.value = '';
-  if (!file || !target) return;
-  const id = target; target = null;
-  const blob = await shrink(file);
-  await applyPhoto(id, blob);
-  savePhoto(id, blob).catch(() => {});
-  buzz(15);
-});
-
-function openCamera(id) { target = id; cam.click(); }
-function buzz(ms) { if (navigator.vibrate) navigator.vibrate(ms); }
-
-// --- input: un dedo ---
-const SENS = 0.25; // grados por px
-let ptr = null, pressTimer = null;
-
-canvas.addEventListener('pointerdown', e => {
-  if (ptr) return;
-  canvas.setPointerCapture(e.pointerId);
-  vyaw = vpitch = 0;
-  const now = performance.now();
-  ptr = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY,
-          t0: now, lt: now, moved: false, longDone: false };
-  const id = faceAt(e.clientX, e.clientY);
-  if (filled.has(id)) {
-    pressTimer = setTimeout(() => {
-      if (!ptr || ptr.moved) return;
-      ptr.longDone = true;
-      buzz(30);
-      openCamera(id);
-    }, 600);
+// ---------- cámara ----------
+let camReady = false;
+async function startCamera() {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({
+      audio: false, video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
+    });
+    video.srcObject = s;
+    await video.play();
+    camReady = true;
+  } catch (e) {
+    showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
   }
+}
+
+function shoot() {
+  if (!camReady || !video.videoWidth) return;
+  const b = basis();
+  const pose = previewPose(b);
+  const k = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
+  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose };
+  addWork(o, c);
+  c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
+  flash.style.transition = 'none'; flash.style.opacity = 0.7;
+  requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
+  if (navigator.vibrate) navigator.vibrate(15);
+  if (works.length >= 1) hideHint();
+}
+
+// ---------- texto ----------
+let hintTimer = null;
+function showHint(t, stay) {
+  hint.innerHTML = t; hint.style.opacity = 1;
+  clearTimeout(hintTimer);
+  if (!stay) hintTimer = setTimeout(hideHint, 7000);
+}
+function hideHint() { hint.style.opacity = 0; }
+
+// ---------- arranque (en iPhone los permisos necesitan un toque) ----------
+let started = false;
+startEl.addEventListener('click', async () => {
+  if (started) return;
+  started = true;
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+      await DeviceOrientationEvent.requestPermission();
+    }
+  } catch (e) {}
+  startEl.remove();
+  await startCamera();
+  setTimeout(() => {
+    showHint(gyroMode
+      ? 'girá con el celu para mirar<br>mantené apretado para caminar<br>tocá para sacar la foto'
+      : 'arrastrá para mirar<br>mantené apretado para caminar<br>tocá para sacar la foto', works.length === 0);
+  }, 600);
 });
 
+// ---------- input: un dedo ----------
+let ptr = null;
+canvas.addEventListener('pointerdown', e => {
+  if (ptr || !started) return;
+  canvas.setPointerCapture(e.pointerId);
+  ptr = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false };
+});
 canvas.addEventListener('pointermove', e => {
   if (!ptr || e.pointerId !== ptr.id) return;
   const dx = e.clientX - ptr.x, dy = e.clientY - ptr.y;
-  const now = performance.now();
-  const dt = Math.max(1, now - ptr.lt);
-  ptr.x = e.clientX; ptr.y = e.clientY; ptr.lt = now;
-  if (!ptr.moved && Math.hypot(e.clientX - ptr.x0, e.clientY - ptr.y0) > 8) {
-    ptr.moved = true;
-    clearTimeout(pressTimer);
-  }
+  ptr.x = e.clientX; ptr.y = e.clientY;
+  if (!ptr.moved && Math.hypot(e.clientX - ptr.x0, e.clientY - ptr.y0) > 10 && !walking()) ptr.moved = true;
   if (!ptr.moved) return;
-  // el mundo sigue al dedo
-  yaw -= dx * SENS;
-  pitch = clampPitch(pitch + dy * SENS);
-  vyaw = -dx * SENS * 16 / dt;
-  vpitch = dy * SENS * 16 / dt;
+  if (gyroMode) {
+    yawOffset += dx * 0.006;           // arrastrar de costado gira el mundo
+  } else {
+    lookYaw -= dx * 0.25;
+    lookPitch = Math.max(-85, Math.min(85, lookPitch + dy * 0.25));
+  }
 });
-
 function endPtr(e) {
   if (!ptr || e.pointerId !== ptr.id) return;
-  clearTimeout(pressTimer);
-  const tap = !ptr.moved && !ptr.longDone && performance.now() - ptr.t0 < 500;
-  if (tap) {
-    const id = faceAt(e.clientX, e.clientY);
-    if (!filled.has(id)) openCamera(id);
-  }
-  if (performance.now() - ptr.lt > 120) vyaw = vpitch = 0; // soltó quieto: sin inercia
+  const quick = performance.now() - ptr.t0 < HOLD_MS;
+  if (!ptr.moved && quick) shoot();
   ptr = null;
 }
 canvas.addEventListener('pointerup', endPtr);
-canvas.addEventListener('pointercancel', e => {
-  if (ptr && e.pointerId === ptr.id) { clearTimeout(pressTimer); ptr = null; }
-});
+canvas.addEventListener('pointercancel', e => { if (ptr && e.pointerId === ptr.id) ptr = null; });
 
-function clampPitch(p) { return Math.max(-85, Math.min(85, p)); }
+const HOLD_MS = 250;
+function walking() { return ptr && !ptr.moved && performance.now() - ptr.t0 >= HOLD_MS; }
 
-// --- loop ---
+// ---------- loop ----------
 let last = performance.now();
-function loop(now) {
-  const k = Math.min(3, (now - last) / 16.67);
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  if (!ptr && (Math.abs(vyaw) > 0.01 || Math.abs(vpitch) > 0.01)) {
-    yaw += vyaw * k;
-    pitch = clampPitch(pitch + vpitch * k);
-    const f = Math.pow(0.93, k);
-    vyaw *= f; vpitch *= f;
+  const b = basis();
+
+  if (walking()) {
+    const flat = norm([b.f[0], 0, b.f[2]]);
+    pos[0] += flat[0] * WALK * dt;
+    pos[2] += flat[2] * WALK * dt;
   }
-  draw();
-  requestAnimationFrame(loop);
+
+  gl.clearColor(0.04, 0.04, 0.05, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const m = matrix(b);
+
+  // piso de puntos
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(dotProg);
+  const gx = Math.round(pos[0]), gz = Math.round(pos[2]);
+  let i = 0;
+  for (let x = -GRID; x <= GRID; x++) for (let z = -GRID; z <= GRID; z++) {
+    dotData[i++] = gx + x; dotData[i++] = 0; dotData[i++] = gz + z;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, dotBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, dotData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(DP.p); gl.vertexAttribPointer(DP.p, 3, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(DP.m, false, m);
+  gl.uniform3fv(DP.eye, pos);
+  gl.drawArrays(gl.POINTS, 0, dotData.length / 3);
+  gl.disableVertexAttribArray(DP.p);
+  gl.disable(gl.BLEND);
+
+  // obras + vista previa
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+  gl.useProgram(quadProg);
+  gl.uniformMatrix4fv(Q.m, false, m);
+  for (const w of works) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+
+  if (camReady && video.readyState >= 2) {
+    const p = previewPose(b);
+    // marco, un centímetro detrás
+    const back = add(p.c, mul(b.f, 0.01));
+    drawQuad(scratch, quadData(back, p.r, p.u, p.w + 0.03, p.h + 0.03), white, [1, 0.47, 0.31]);
+    gl.bindTexture(gl.TEXTURE_2D, videoTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h), videoTex, [1, 1, 1]);
+  }
+  gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
+
+  requestAnimationFrame(frame);
 }
 
-loadPhotos().then(all => Promise.all(Object.keys(all).map(id => applyPhoto(id, all[id]))))
-  .catch(() => {}).finally(updateHint);
-requestAnimationFrame(loop);
+loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 
 // para los tests
 window.__game = {
-  get yaw() { return yaw; }, get pitch() { return pitch; }, get vel() { return [vyaw, vpitch]; },
-  set view(v) { yaw = v[0]; pitch = v[1]; vyaw = vpitch = 0; },
-  get filled() { return [...filled]; },
-  faceAt,
+  pos, works, get gyroMode() { return gyroMode; },
+  look(y, p) { lookYaw = y; lookPitch = p; },
+  get camReady() { return camReady; },
 };
