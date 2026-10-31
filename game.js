@@ -2,7 +2,7 @@
 // Mirás girando el celu (giroscopio). Mantenés apretado para caminar hacia donde mirás.
 // Frente a vos flota un rectángulo con lo que ve la cámara. Tocás: la foto queda fija ahí.
 // Arrastrar de costado gira el mundo (para acomodarlo si arrancó torcido).
-const VERSION = 'v3.1';
+const VERSION = 'v3.2';
 document.getElementById('ver').textContent = VERSION;
 
 const canvas = document.getElementById('c');
@@ -22,9 +22,11 @@ function dbg() {
   dbgEl.textContent =
     `gl:${gl ? 'ok' : 'NO'} cam:${camState} video:${video.videoWidth}x${video.videoHeight} rs:${video.readyState} paused:${video.paused}\n` +
     `gyro:${gyroMode ? 'si' : 'no'} [${g}] perm:${permState} obras:${works.length}\n` +
+    `frames:${frames} lost:${gl.isContextLost()} glErr:${gl.getError()}\n` +
     (lastErr ? 'ERR: ' + lastErr : '');
 }
-let camState = 'sin pedir', permState = '-';
+let camState = 'sin pedir', permState = '-', frames = 0;
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lastErr = 'CONTEXTO WEBGL PERDIDO (frame ' + frames + ')'; });
 
 // --- unidades: metros. x derecha, y arriba, arrancás mirando -z ---
 const EYE = 1.6;
@@ -159,6 +161,17 @@ function texture(src) {
   return t;
 }
 const white = texture(null);
+// iOS se rompe subiendo el video de la cámara directo a WebGL: lo copiamos antes a un canvas 2D
+const vc = document.createElement('canvas');
+const vcx = vc.getContext('2d');
+function videoFrame() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const k = Math.min(1, 640 / Math.max(vw, vh));
+  const w = Math.round(vw * k), h = Math.round(vh * k);
+  if (vc.width !== w || vc.height !== h) { vc.width = w; vc.height = h; }
+  vcx.drawImage(video, 0, 0, w, h);
+  return vc;
+}
 const videoTex = texture(null);
 
 // un cuadro: centro c, vectores r/u (unitarios), ancho w, alto h
@@ -342,6 +355,7 @@ function walking() { return ptr && !ptr.moved && performance.now() - ptr.t0 >= H
 // ---------- loop ----------
 let last = performance.now();
 function frame(now) {
+  frames++;
   try { draw(now); } catch (e) { lastErr = (e && (e.name + ': ' + e.message)) || String(e); }
   dbg();
   requestAnimationFrame(frame);
@@ -394,7 +408,7 @@ function draw(now) {
   if (camReady && video.readyState >= 2) {
     const p = previewPose(b);
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
     drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h), videoTex, [1, 1, 1]);
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
