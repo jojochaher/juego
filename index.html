@@ -93,6 +93,12 @@
   }
   .pill.on { background: rgba(255,120,80,0.85); color: #fff; }
   .pill:active { background: rgba(255,255,255,0.25); }
+  #modes {
+    position: fixed; left: 0; right: 0; bottom: calc(176px + env(safe-area-inset-bottom));
+    display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
+  }
+  #modes .pill { pointer-events: auto; }
+  #modes .pill.on { background: rgba(255,255,255,0.9); color: #111; }
   #cancel {
     right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
     width: 48px; height: 48px; background: rgba(255,255,255,0.18); color: #fff; font-size: 20px;
@@ -115,6 +121,13 @@
   <div id="home" class="ctl pill" style="display:none">inicio</div>
   <div id="gyroT" class="ctl pill" style="display:none"></div>
   <div id="inv" class="ctl pill" style="display:none"></div>
+</div>
+ <div id="modes" style="display:none">
+  <div class="pill" data-m="mover">mover</div>
+  <div class="pill" data-m="recortar">recortar</div>
+  <div class="pill" data-m="encuadre">encuadre</div>
+  <div class="pill" data-m="girar">girar</div>
+  <div class="pill" id="reset" aria-label="restablecer">↺</div>
 </div>
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>

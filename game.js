@@ -1,17 +1,17 @@
-// juego — v4: museo en el vacío, con fotos en la mano
-// Mirás con el giroscopio y ajustás arrastrando con el dedo (horizontal y vertical).
-// Te movés con el joystick de abajo a la izquierda.
-// Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste)
-// flota frente a vos: dos dedos = escala y giro, barra de la derecha = distancia.
-// Obturador: la vista previa queda fija como foto. Tocar una foto la agarra; ✓ la suelta, tacho la borra.
-const VERSION = 'v4.2';
+// juego — v5: museo en el vacío, con edición de fotos
+// Mirás con el giroscopio y ajustás arrastrando con el dedo. Te movés con el joystick.
+// Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste) viaja pegado
+// a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
+// encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
+// Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
+const VERSION = 'v5';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
 const canvas = $('c'), video = $('vid'), hint = $('hint'), flash = $('flash'), startEl = $('start');
 const joyEl = $('joy'), knobEl = $('knob'), distEl = $('dist'), distKnob = $('distKnob');
 const shootBtn = $('shoot'), dropBtn = $('drop'), trashBtn = $('trash'), cancelBtn = $('cancel');
-const homeBtn = $('home'), gyroBtn = $('gyroT');
+const homeBtn = $('home'), gyroBtn = $('gyroT'), invEl = $('inv'), modesEl = $('modes'), resetBtn = $('reset');
 const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
 
 window.addEventListener('error', e => showHint('error: ' + e.message));
@@ -23,6 +23,7 @@ const FOVX = 50 * Math.PI / 180;
 const MOVE = 1.6;                 // m/s con el joystick a fondo
 const LOOK = 0.0045;              // radianes por px de arrastre
 const DIST_MIN = 0.3, DIST_MAX = 12;
+const OUTLINE_PX = 3;             // grosor del marco, en px de pantalla
 const pos = [0, EYE, 0];
 
 // ---------- vectores y cuaterniones ----------
@@ -47,17 +48,22 @@ function qrot(q, v) {
   return [p[0], p[1], p[2]];
 }
 function qaxis(ax, ang) { const s = Math.sin(ang / 2); return [ax[0] * s, ax[1] * s, ax[2] * s, Math.cos(ang / 2)]; }
+// rota v alrededor del eje k (unitario)
+function rotAxis(v, k, a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return add(add(mul(v, c), mul(cross(k, v), s)), mul(k, dot(k, v) * (1 - c)));
+}
 
 // ---------- orientación: giroscopio + ajuste con el dedo ----------
 let gyro = null, gyroMode = false;
-let yawOff = 0, pitchOff = 0;     // lo que sumás arrastrando (radianes)
-let gyroOn = true;                // se puede apagar con el botón de arriba
+let yawOff = 0, pitchOff = 0;
+let gyroOn = true;
 try { gyroOn = localStorage.getItem('giroscopio') !== '0'; } catch (e) {}
 
 window.addEventListener('deviceorientation', e => {
   if (e.alpha == null) return;
   gyro = { a: e.alpha, b: e.beta, g: e.gamma };
-  if (!gyroMode) { gyroMode = true; ui(); }   // recién ahora sabemos que hay giroscopio
+  if (!gyroMode) { gyroMode = true; ui(); }
 });
 
 function screenAngle() {
@@ -65,7 +71,6 @@ function screenAngle() {
   return typeof window.orientation === 'number' ? window.orientation : 0;
 }
 
-// giro del mundo (yaw) * giroscopio * inclinación propia (pitch, en el eje de la cámara)
 function camQuat() {
   let q = [0, 0, 0, 1];
   if (gyroMode && gyro && gyroOn) {
@@ -74,7 +79,7 @@ function camQuat() {
     const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
     const s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2);
     q = [s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 - s1 * s2 * c3, c1 * c2 * c3 + s1 * s2 * s3];
-    q = qmul(q, [-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);   // la cámara mira por la espalda del celu
+    q = qmul(q, [-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
     q = qmul(q, qaxis([0, 0, 1], -screenAngle() * R));
   }
   return qmul(qmul(qaxis([0, 1, 0], yawOff), q), qaxis([1, 0, 0], pitchOff));
@@ -84,6 +89,7 @@ function basis() {
   const q = camQuat();
   return { f: qrot(q, [0, 0, -1]), u: qrot(q, [0, 1, 0]), r: qrot(q, [1, 0, 0]) };
 }
+function heading(f) { return Math.atan2(-f[0], -f[2]); }
 
 // ---------- GL ----------
 let W = 1, H = 1;
@@ -110,14 +116,13 @@ function program(vs, fs) {
 const quadProg = program(`
 attribute vec3 p; attribute vec2 uv; uniform mat4 m; varying vec2 v;
 void main() { v = uv; gl_Position = m * vec4(p, 1.0); }`, `
-precision mediump float; uniform sampler2D t; uniform vec3 tint; varying vec2 v;
-void main() { gl_FragColor = vec4(texture2D(t, v).rgb * tint, 1.0); }`);
+precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; varying vec2 v;
+void main() { gl_FragColor = vec4(texture2D(t, v).rgb * tint, alpha); }`);
 const Q = {
   p: gl.getAttribLocation(quadProg, 'p'), uv: gl.getAttribLocation(quadProg, 'uv'),
-  m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'),
+  m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'), alpha: gl.getUniformLocation(quadProg, 'alpha'),
 };
 
-// puntitos del piso (para sentir que te movés)
 const dotProg = program(`
 attribute vec3 p; uniform mat4 m; uniform vec3 eye; varying float a;
 void main() {
@@ -149,7 +154,6 @@ function texture(src) {
 }
 const white = texture(null);
 const videoTex = texture(null);
-// el video pasa por un canvas 2D chico antes de WebGL
 const vc = document.createElement('canvas'), vcx = vc.getContext('2d');
 function videoFrame() {
   const vw = video.videoWidth, vh = video.videoHeight;
@@ -160,7 +164,6 @@ function videoFrame() {
   return vc;
 }
 
-// texturas de obras a 512px: entran muchas en la memoria del iPhone
 const TEX_MAX = 512;
 const smallC = document.createElement('canvas'), smallX = smallC.getContext('2d');
 function small(src) {
@@ -171,30 +174,40 @@ function small(src) {
   return smallC;
 }
 
-function quadData(c, r, u, w, h) {
+const FULL = [0, 0, 1, 1];
+// cuadro: centro c, ejes r/u (unitarios), ancho w, alto h, recorte uv = [u0, v0, u1, v1] (v0 = arriba)
+function quadData(c, r, u, w, h, uv = FULL) {
   const pt = (sx, sy) => add(c, add(mul(r, w / 2 * sx), mul(u, h / 2 * sy)));
+  const [u0, v0, u1, v1] = uv;
   return new Float32Array([
-    ...pt(-1, 1), 0, 0, ...pt(1, 1), 1, 0, ...pt(-1, -1), 0, 1,
-    ...pt(1, 1), 1, 0, ...pt(1, -1), 1, 1, ...pt(-1, -1), 0, 1,
+    ...pt(-1, 1), u0, v0, ...pt(1, 1), u1, v0, ...pt(-1, -1), u0, v1,
+    ...pt(1, 1), u1, v0, ...pt(1, -1), u1, v1, ...pt(-1, -1), u0, v1,
   ]);
 }
 const scratch = gl.createBuffer();
-function drawQuad(buf, data, tex, tint) {
+function drawQuad(buf, data, tex, tint, alpha = 1) {
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   if (data) gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(Q.p); gl.vertexAttribPointer(Q.p, 3, gl.FLOAT, false, 20, 0);
   gl.enableVertexAttribArray(Q.uv); gl.vertexAttribPointer(Q.uv, 2, gl.FLOAT, false, 20, 12);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.uniform3fv(Q.tint, tint);
+  gl.uniform1f(Q.alpha, alpha);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-}
-// cuadro con marco de color, el marco un centímetro detrás
-function drawFramed(p, f, tex, color) {
-  drawQuad(scratch, quadData(add(p.c, mul(f, 0.01)), p.r, p.u, p.w + 0.03 * Math.max(1, p.w), p.h + 0.03 * Math.max(1, p.w)), white, color);
-  drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h), tex, [1, 1, 1]);
 }
 
 function tans() { const tx = Math.tan(FOVX / 2); return [tx, tx * H / W]; }
+const metersPerPx = d => d * 2 * Math.tan(FOVX / 2) / W;   // cuánto mide un px a distancia d
+
+// foto con marco de grosor fijo en pantalla, el marco apenas detrás
+function drawFramed(p, tex, color) {
+  const d = len(sub(p.c, pos));
+  const m = OUTLINE_PX * metersPerPx(d);
+  let n = norm(cross(p.r, p.u));
+  if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);         // hacia atrás de la foto
+  drawQuad(scratch, quadData(add(p.c, mul(n, 0.004 * d)), p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
+  drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
+}
 
 function matrix(b) {
   const { f, r, u } = b;
@@ -211,74 +224,136 @@ function matrix(b) {
 }
 
 // ---------- obras ----------
-const works = []; // {id, c, r, u, w, h, tex, buf}
+const works = []; // {id, c, r, u, w, h, uv, aspect, tex, buf}
 
 function setBuf(w) {
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
-  gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h), gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.uv), gl.STATIC_DRAW);
 }
 function addWork(o, img) {
-  const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, tex: texture(small(img)), buf: gl.createBuffer() };
+  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+  const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: ih / iw,
+              tex: texture(small(img)), buf: gl.createBuffer() };
   setBuf(w);
   works.push(w);
   return w;
 }
 
 // ---------- lo que tenés en la mano ----------
-// ang = ancho / distancia (tamaño aparente), roll = giro sobre la línea de mirada
-const DEFAULT_ANG = 2 * Math.tan(FOVX / 2) * 0.58;
-const hold = { dist: 1.0, ang: DEFAULT_ANG, roll: 0, aspect: 4 / 3, work: null };
-let previewSaved = null;   // cómo estaba la vista previa antes de agarrar una foto
+// pose relativa a la cámara: x = derecha, y = arriba, z = adelante
+const toWorldV = (b, l) => add(add(mul(b.r, l[0]), mul(b.u, l[1])), mul(b.f, l[2]));
+const toLocalV = (b, v) => [dot(v, b.r), dot(v, b.u), dot(v, b.f)];
+const DEFAULT_W = 2 * Math.tan(FOVX / 2) * 0.58;           // a 1 m ocupa ~58% del ancho
 
-function heldPose(b) {
-  const cr = Math.cos(hold.roll), sr = Math.sin(hold.roll);
-  const r = add(mul(b.r, cr), mul(b.u, sr));
-  const u = sub(mul(b.u, cr), mul(b.r, sr));
-  const w = hold.ang * hold.dist;
-  return { c: add(pos, mul(b.f, hold.dist)), r, u, w, h: w * hold.aspect };
+function freshPreview(aspect = 4 / 3) {
+  return { c: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0], w: DEFAULT_W, h: DEFAULT_W * aspect, uv: FULL.slice(), aspect, fresh: true };
+}
+let preview = freshPreview();
+let held = null;            // { work, L }
+let mode = 'mover';
+const cur = () => held ? held.L : preview;
+
+function worldPose(b, L) {
+  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice() };
+}
+
+// operaciones sobre lo que está en la mano
+function scaleBy(L, k) {
+  k = clamp(k, 0.02 / Math.min(L.w, L.h), 40 / Math.max(L.w, L.h));
+  L.w *= k; L.h *= k;
+}
+function setDist(L, d) {
+  const k = d / len(L.c);
+  L.c = mul(L.c, k); L.w *= k; L.h *= k;
+}
+function rollBy(L, a) {   // giro en el plano de la foto
+  const n = norm(cross(L.r, L.u));
+  L.r = norm(rotAxis(L.r, n, a)); L.u = norm(rotAxis(L.u, n, a));
+}
+function spinBy(L, ax, ay) {  // girar sobre su propio eje vertical (ax) y horizontal (ay)
+  L.r = norm(rotAxis(L.r, L.u, ax));
+  L.u = norm(rotAxis(L.u, L.r, ay));
+  L.r = norm(cross(L.u, cross(L.r, L.u)));   // re-ortogonalizar
+}
+// zoom del contenido: achica/agranda la ventana uv alrededor de su centro
+function zoomContent(L, uv0, k) {
+  const cu = (uv0[0] + uv0[2]) / 2, cv = (uv0[1] + uv0[3]) / 2;
+  let ru = (uv0[2] - uv0[0]) / k, rv = (uv0[3] - uv0[1]) / k;
+  const big = Math.max(ru, rv);
+  if (big > 1) { ru /= big; rv /= big; }
+  if (Math.min(ru, rv) < 0.03) { const s = 0.03 / Math.min(ru, rv); ru *= s; rv *= s; }
+  L.uv = fitUV([cu - ru / 2, cv - rv / 2, cu + ru / 2, cv + rv / 2]);
+}
+function panContent(L, du, dv) {
+  L.uv = fitUV([L.uv[0] + du, L.uv[1] + dv, L.uv[2] + du, L.uv[3] + dv]);
+}
+function fitUV(uv) {   // mantiene la ventana adentro de la imagen sin cambiar su tamaño
+  let [u0, v0, u1, v1] = uv;
+  if (u0 < 0) { u1 -= u0; u0 = 0; } if (u1 > 1) { u0 -= u1 - 1; u1 = 1; }
+  if (v0 < 0) { v1 -= v0; v0 = 0; } if (v1 > 1) { v0 -= v1 - 1; v1 = 1; }
+  return [Math.max(0, u0), Math.max(0, v0), Math.min(1, u1), Math.min(1, v1)];
+}
+// recortar: mover bordes. edges = {l, r, t, b}; (a, bb) = punto del dedo en el plano de la foto, en metros
+function cropTo(L, edges, a, bb) {
+  const [u0, v0, u1, v1] = L.uv;
+  const su = L.w / (u1 - u0), sv = L.h / (v1 - v0);
+  let left = -L.w / 2, right = L.w / 2, top = L.h / 2, bottom = -L.h / 2;
+  const mn = 0.04 * len(L.c);
+  let nu0 = u0, nu1 = u1, nv0 = v0, nv1 = v1;
+  if (edges.r) { right = clamp(a, left + mn, left + (1 - u0) * su); nu1 = u0 + (right - left) / su; }
+  if (edges.l) { left = clamp(a, right - u1 * su, right - mn); nu0 = u1 - (right - left) / su; }
+  if (edges.t) { top = clamp(bb, bottom + mn, bottom + v1 * sv); nv0 = v1 - (top - bottom) / sv; }
+  if (edges.b) { bottom = clamp(bb, top - (1 - v0) * sv, top - mn); nv1 = v0 + (top - bottom) / sv; }
+  L.c = add(L.c, add(mul(L.r, (left + right) / 2), mul(L.u, (top + bottom) / 2)));
+  L.w = right - left; L.h = top - bottom;
+  L.uv = [nu0, nv0, nu1, nv1];
+}
+// dónde toca el dedo el plano de lo que está en la mano (coordenadas de la foto, en metros)
+function touchOnHeld(L, x, y) {
+  const [tx, ty] = tans();
+  const d = [((x / W) * 2 - 1) * tx, (1 - (y / H) * 2) * ty, 1];
+  const n = cross(L.r, L.u);
+  const den = dot(d, n);
+  if (Math.abs(den) < 1e-6) return null;
+  const t = dot(L.c, n) / den;
+  if (t <= 0) return null;
+  const p = sub(mul(d, t), L.c);
+  return [dot(p, L.r), dot(p, L.u)];
+}
+function resetHeld() {
+  const L = cur();
+  const d = len(L.c);
+  const aspect = held ? held.work.aspect : (video.videoWidth ? video.videoHeight / video.videoWidth : 4 / 3);
+  const w = held ? L.w : DEFAULT_W * d;
+  Object.assign(L, { c: [0, 0, d], r: [1, 0, 0], u: [0, 1, 0], w, h: w * aspect, uv: FULL.slice() });
+  buzz(10);
+  ui();
 }
 
 function pick(w) {
-  if (hold.work) return;
+  if (held) return;
   const b = basis();
-  previewSaved = { dist: hold.dist, ang: hold.ang, roll: hold.roll };
-  hold.work = w;
-  hold.dist = clamp(len(sub(w.c, pos)), DIST_MIN, DIST_MAX);
-  hold.ang = w.w / hold.dist;
-  hold.aspect = w.h / w.w;
-  hold.roll = Math.atan2(dot(w.r, b.u), dot(w.r, b.r));
+  held = { work: w, L: { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice() } };
+  setMode('mover');
   buzz(12);
   ui();
 }
-
-function releaseHold() {
-  hold.work = null;
-  if (previewSaved) Object.assign(hold, previewSaved);
-  previewSaved = null;
-  ui();
-}
+function releaseHold() { held = null; setMode('mover'); ui(); }
 
 function drop() {
-  const w = hold.work;
-  if (!w) return;
-  Object.assign(w, heldPose(basis()));
+  if (!held) return;
+  const w = held.work;
+  Object.assign(w, worldPose(basis(), held.L));
   setBuf(w);
-  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h };
+  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
   store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
   buzz(12);
   releaseHold();
 }
-
-// soltar sin cambios: la foto vuelve a donde estaba
-function cancelHold() {
-  if (!hold.work) return;
-  buzz(8);
-  releaseHold();
-}
-
+function cancelHold() { if (held) { buzz(8); releaseHold(); } }
 function trash() {
-  const w = hold.work;
-  if (!w) return;
+  if (!held) return;
+  const w = held.work;
   works.splice(works.indexOf(w), 1);
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
   store('readwrite', s => s.delete(w.id)).catch(() => {});
@@ -286,7 +361,6 @@ function trash() {
   releaseHold();
 }
 
-// qué foto hay debajo de un punto de la pantalla
 function workAt(x, y) {
   const b = basis();
   const [tx, ty] = tans();
@@ -294,7 +368,6 @@ function workAt(x, y) {
   const d = norm(add(b.f, add(mul(b.r, nx * tx), mul(b.u, ny * ty))));
   let best = null, bestT = Infinity;
   for (const w of works) {
-    if (w === hold.work) continue;
     const n = cross(w.r, w.u);
     const den = dot(d, n);
     if (Math.abs(den) < 1e-6) continue;
@@ -315,21 +388,21 @@ const db = new Promise((res, rej) => {
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
 });
-async function store(mode, fn) {
+async function store(m, fn) {
   const d = await db;
   return new Promise((res, rej) => {
-    const tx = d.transaction('obras', mode);
+    const tx = d.transaction('obras', m);
     const out = fn(tx.objectStore('obras'));
     tx.oncomplete = () => res(out && out.result); tx.onerror = () => rej(tx.error);
   });
 }
 async function loadWorks() {
-  if (/[?&]borrar/.test(location.search)) {           // escape: jojochaher.github.io/juego/?borrar
+  if (/[?&]borrar/.test(location.search)) {
     await store('readwrite', s => s.clear());
     history.replaceState(null, '', location.pathname);
   }
   const keys = await store('readonly', s => s.getAllKeys());
-  for (const k of keys || []) {                       // de a una, para no juntar todas en memoria
+  for (const k of keys || []) {
     const o = await store('readonly', s => s.get(k));
     if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
@@ -357,8 +430,8 @@ async function startCamera() {
 }
 
 function shoot() {
-  if (!camReady || !video.videoWidth || hold.work) return;
-  const pose = heldPose(basis());
+  if (!camReady || !video.videoWidth || held) return;
+  const pose = worldPose(basis(), preview);
   const k = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
   const c = document.createElement('canvas');
   c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
@@ -378,28 +451,47 @@ let hintTimer = null;
 function showHint(t, stay) {
   hint.innerHTML = t; hint.style.opacity = 1;
   clearTimeout(hintTimer);
-  if (!stay) hintTimer = setTimeout(() => { hint.style.opacity = 0; }, 7000);
+  if (!stay) hintTimer = setTimeout(() => { hint.style.opacity = 0; }, 5000);
 }
+
+const MODE_HINT = {
+  mover: 'dos dedos: tamaño y giro · barra: distancia',
+  recortar: 'arrastrá un borde o una esquina',
+  encuadre: 'un dedo mueve la imagen · dos dedos zoom',
+  girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
+};
+function setMode(m) {
+  mode = m;
+  for (const el of modesEl.querySelectorAll('[data-m]')) el.classList.toggle('on', el.dataset.m === m);
+}
+for (const el of modesEl.querySelectorAll('[data-m]')) {
+  el.addEventListener('click', () => { setMode(el.dataset.m); showHint(MODE_HINT[mode]); });
+}
+resetBtn.addEventListener('click', resetHeld);
 
 let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
+  const holding = !!held, canEdit = started && (holding || camReady);
   show(joyEl, started);
   show(invEl, started);
-  show(distEl, started && (camReady || hold.work));
-  show(shootBtn, started && camReady && !hold.work);
-  show(dropBtn, started && !!hold.work);
-  show(trashBtn, started && !!hold.work);
-  show(cancelBtn, started && !!hold.work);
   show(homeBtn, started);
   show(gyroBtn, started && gyroMode);
-  distKnob.style.top = (1 - distT(hold.dist)) * 100 + '%';
+  show(distEl, canEdit);
+  show(modesEl, canEdit);
+  show(shootBtn, started && camReady && !holding);
+  show(dropBtn, started && holding);
+  show(trashBtn, started && holding);
+  show(cancelBtn, started && holding);
+  distKnob.style.top = (1 - distT(len(cur().c))) * 100 + '%';
 }
 
 shootBtn.addEventListener('click', shoot);
+dropBtn.addEventListener('click', drop);
+trashBtn.addEventListener('click', trash);
+cancelBtn.addEventListener('click', cancelHold);
 
-// ---------- invertir el arrastre de la cámara (se guarda en el celu) ----------
-const invEl = $('inv');
+// ---------- invertir el arrastre de la cámara ----------
 let invertLook = false;
 try { invertLook = localStorage.getItem('invertir') === '1'; } catch (e) {}
 function paintInv() { invEl.textContent = invertLook ? 'arrastre: invertido' : 'arrastre: normal'; invEl.classList.toggle('on', invertLook); }
@@ -409,31 +501,23 @@ invEl.addEventListener('click', () => {
   paintInv();
 });
 paintInv();
-dropBtn.addEventListener('click', drop);
-trashBtn.addEventListener('click', trash);
-cancelBtn.addEventListener('click', cancelHold);
 
 // ---------- volver al inicio ----------
 homeBtn.addEventListener('click', () => {
   pos[0] = 0; pos[1] = EYE; pos[2] = 0;
-  pitchOff = 0;
-  // mirar hacia el frente original (-z), con o sin giroscopio
-  yawOff = 0;
+  pitchOff = 0; yawOff = 0;
   yawOff = -heading(basis().f);
   buzz(10);
 });
 
-// rumbo horizontal de una dirección (0 = mirando -z, positivo = girado a la izquierda)
-function heading(f) { return Math.atan2(-f[0], -f[2]); }
-
 // ---------- prender/apagar el giroscopio sin que salte la vista ----------
 function paintGyro() { gyroBtn.textContent = gyroOn ? 'giroscopio: sí' : 'giroscopio: no'; gyroBtn.classList.toggle('on', !gyroOn); }
 gyroBtn.addEventListener('click', () => {
-  const f = basis().f;                      // hacia dónde mirás ahora
+  const f = basis().f;
   gyroOn = !gyroOn;
   try { localStorage.setItem('giroscopio', gyroOn ? '1' : '0'); } catch (e) {}
   if (gyroOn) {
-    pitchOff = 0; yawOff = 0;               // el giroscopio vuelve a mandar la inclinación
+    pitchOff = 0; yawOff = 0;
     yawOff = heading(f) - heading(basis().f);
   } else {
     pitchOff = Math.asin(clamp(f[1], -1, 1));
@@ -445,11 +529,11 @@ paintGyro();
 
 // ---------- barra de distancia (arriba = más lejos) ----------
 const LMIN = Math.log(DIST_MIN), LMAX = Math.log(DIST_MAX);
-const distT = d => (Math.log(d) - LMIN) / (LMAX - LMIN);
+const distT = d => clamp((Math.log(d) - LMIN) / (LMAX - LMIN), 0, 1);
 function distFromY(y) {
   const r = distEl.getBoundingClientRect();
   const t = clamp(1 - (y - r.top) / r.height, 0, 1);
-  hold.dist = Math.exp(LMIN + t * (LMAX - LMIN));
+  setDist(cur(), Math.exp(LMIN + t * (LMAX - LMIN)));
   distKnob.style.top = (1 - t) * 100 + '%';
 }
 let distPtr = null;
@@ -479,23 +563,37 @@ joyEl.addEventListener('pointermove', e => { if (e.pointerId === joy.id) joyUpda
 joyEl.addEventListener('pointerup', joyEnd);
 joyEl.addEventListener('pointercancel', joyEnd);
 
-// ---------- dedos sobre la pantalla: mirar, agarrar, escala y giro ----------
-const touches = new Map(); // id -> {x, y, x0, y0, t0, moved}
-let gesture = null;        // dos dedos: {d0, a0, ang0, roll0}
+// ---------- dedos sobre la pantalla ----------
+const touches = new Map(); // id -> {x, y, x0, y0, t0, moved, crop}
+let gesture = null;        // dos dedos
 
 function twoFingers() {
   const [a, b] = [...touches.values()];
   return { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x) };
 }
 
+// en recortar: qué bordes quedan debajo del dedo
+function edgesAt(L, x, y) {
+  const p = touchOnHeld(L, x, y);
+  if (!p) return null;
+  const tol = 36 * metersPerPx(len(L.c));
+  const [a, b] = p, hw = L.w / 2, hh = L.h / 2;
+  if (Math.abs(a) > hw + tol || Math.abs(b) > hh + tol) return null;
+  const e = { l: Math.abs(a + hw) < tol, r: Math.abs(a - hw) < tol, t: Math.abs(b - hh) < tol, b: Math.abs(b + hh) < tol };
+  return (e.l || e.r || e.t || e.b) ? e : null;
+}
+
 canvas.addEventListener('pointerdown', e => {
   if (!started) return;
   canvas.setPointerCapture(e.pointerId);
-  touches.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false });
+  const t = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, crop: null };
+  if (mode === 'recortar') t.crop = edgesAt(cur(), e.clientX, e.clientY);
+  touches.set(e.pointerId, t);
   if (touches.size === 2) {
     const g = twoFingers();
-    gesture = { d0: g.d, a0: g.a, ang0: hold.ang, roll0: hold.roll };
-    for (const t of touches.values()) t.moved = true;  // ya no es un toque
+    const L = cur();
+    gesture = { d0: g.d, a0: g.a, lastD: g.d, lastA: g.a, uv0: L.uv.slice() };
+    for (const tt of touches.values()) { tt.moved = true; tt.crop = null; }
   }
 });
 
@@ -504,20 +602,40 @@ canvas.addEventListener('pointermove', e => {
   if (!t) return;
   const dx = e.clientX - t.x, dy = e.clientY - t.y;
   t.x = e.clientX; t.y = e.clientY;
+  const L = cur();
+
   if (touches.size >= 2 && gesture) {
     const g = twoFingers();
-    hold.ang = clamp(gesture.ang0 * g.d / Math.max(10, gesture.d0), 0.05, 4);
-    let da = g.a - gesture.a0;
-    da = Math.atan2(Math.sin(da), Math.cos(da));
-    hold.roll = gesture.roll0 - da;
+    let da = g.a - gesture.lastA; da = Math.atan2(Math.sin(da), Math.cos(da));
+    const k = g.d / Math.max(10, gesture.lastD);
+    gesture.lastA = g.a; gesture.lastD = g.d;
+    if (mode === 'mover') { scaleBy(L, k); rollBy(L, -da); }
+    else if (mode === 'girar') rollBy(L, -da);
+    else if (mode === 'encuadre') zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
     return;
   }
   if (!t.moved && Math.hypot(t.x - t.x0, t.y - t.y0) > 8) t.moved = true;
   if (!t.moved) return;
-  // normal: el mundo sigue al dedo. invertido: la cámara sigue al dedo
-  const k = invertLook ? -LOOK : LOOK;
-  yawOff += dx * k;
-  pitchOff = clamp(pitchOff + dy * k, -1.4, 1.4);
+
+  if (mode === 'recortar' && t.crop) {
+    const p = touchOnHeld(L, e.clientX, e.clientY);
+    if (p) cropTo(L, t.crop, p[0], p[1]);
+    return;
+  }
+  if (mode === 'encuadre') {
+    // el dedo arrastra la imagen: proyectar el movimiento sobre los ejes de la foto (por si está girada)
+    const mpp = metersPerPx(len(L.c));
+    const v = [dx * mpp, -dy * mpp, 0];
+    const su = L.w / (L.uv[2] - L.uv[0]), sv = L.h / (L.uv[3] - L.uv[1]);
+    panContent(L, -dot(v, L.r) / su, dot(v, L.u) / sv);
+    return;
+  }
+  // girar: como una bola, la cara de adelante sigue al dedo
+  if (mode === 'girar') { spinBy(L, -dx * 0.008, -dy * 0.008); return; }
+  // mirar
+  const kk = invertLook ? -LOOK : LOOK;
+  yawOff += dx * kk;
+  pitchOff = clamp(pitchOff + dy * kk, -1.4, 1.4);
 });
 
 function endTouch(e) {
@@ -525,7 +643,7 @@ function endTouch(e) {
   if (!t) return;
   touches.delete(e.pointerId);
   if (touches.size < 2) gesture = null;
-  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350) {
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held) {
     const w = workAt(e.clientX, e.clientY);
     if (w) pick(w);
   }
@@ -533,7 +651,7 @@ function endTouch(e) {
 canvas.addEventListener('pointerup', endTouch);
 canvas.addEventListener('pointercancel', endTouch);
 
-// ---------- arranque (en iPhone los permisos necesitan un toque) ----------
+// ---------- arranque ----------
 startEl.addEventListener('click', async () => {
   if (started) return;
   started = true;
@@ -544,9 +662,10 @@ startEl.addEventListener('click', async () => {
   const camP = startCamera();
   await perm;
   startEl.remove();
+  setMode('mover');
   ui();
   await camP;
-  showHint('joystick para moverte · arrastrá para mirar<br>dos dedos: tamaño y giro · barra: distancia<br>tocá una foto para agarrarla');
+  showHint('joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla');
 });
 
 // ---------- loop ----------
@@ -560,17 +679,20 @@ function draw(now) {
   last = now;
   const b = basis();
 
-  // joystick: adelante/atrás y costado, siempre sobre el piso
   if (joy.x || joy.y) {
     let fw = [b.f[0], 0, b.f[2]];
-    if (len(fw) < 0.2) fw = [b.u[0], 0, b.u[2]];      // mirando derecho al piso o al techo
+    if (len(fw) < 0.2) fw = [b.u[0], 0, b.u[2]];
     fw = norm(fw);
     const rt = norm(cross(fw, [0, 1, 0]));
     const v = add(mul(fw, -joy.y), mul(rt, joy.x));
     pos[0] += v[0] * MOVE * dt; pos[2] += v[2] * MOVE * dt;
   }
 
-  if (camReady && video.videoWidth && !hold.work) hold.aspect = video.videoHeight / video.videoWidth;
+  // la vista previa toma la proporción real de la cámara la primera vez
+  if (preview.fresh && camReady && video.videoWidth) {
+    preview = freshPreview(video.videoHeight / video.videoWidth);
+    preview.fresh = false;
+  }
 
   gl.clearColor(0.04, 0.04, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -598,27 +720,38 @@ function draw(now) {
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
   gl.useProgram(quadProg);
   gl.uniformMatrix4fv(Q.m, false, m);
-  for (const w of works) if (w !== hold.work) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  for (const w of works) if (!held || w !== held.work) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
 
   // en la mano
-  if (hold.work) {
-    drawFramed(heldPose(b), b.f, hold.work.tex, [1, 1, 1]);
+  if (held) {
+    drawFramed(worldPose(b, held.L), held.work.tex, [1, 1, 1]);
   } else if (camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
-    drawFramed(heldPose(b), b.f, videoTex, [1, 0.47, 0.31]);
+    drawFramed(worldPose(b, preview), videoTex, [1, 0.47, 0.31]);
+  }
+
+  // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)
+  if (held) {
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    drawQuad(held.work.buf, null, held.work.tex, [1, 1, 1], 0.35);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
+
+  if (distPtr == null) distKnob.style.top = (1 - distT(len(cur().c))) * 100 + '%';
 }
 
 // ---------- auto-actualización ----------
 async function checkUpdate() {
   try {
     const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
-    const m = (await r.text()).match(/const VERSION = '([^']+)'/);
-    if (m && m[1] !== VERSION && touches.size === 0 && !hold.work) {
-      if (sessionStorage.getItem('recargado') === m[1]) return;
-      sessionStorage.setItem('recargado', m[1]);
+    const mm = (await r.text()).match(/const VERSION = '([^']+)'/);
+    if (mm && mm[1] !== VERSION && touches.size === 0 && !held) {
+      if (sessionStorage.getItem('recargado') === mm[1]) return;
+      sessionStorage.setItem('recargado', mm[1]);
       location.reload();
     }
   } catch (e) {}
@@ -629,9 +762,11 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 ui();
 loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 
-// para los tests (grados, como antes: yaw positivo = mirar a la derecha)
+// para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
-  pos, works, hold, joy, get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
+  pos, works, joy,
+  get held() { return held; }, get preview() { return preview; }, get mode() { return mode; },
+  get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };
