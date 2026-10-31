@@ -36,6 +36,14 @@
     position: fixed; left: 10px; bottom: calc(8px + env(safe-area-inset-bottom));
     color: rgba(255,255,255,0.25); font-size: 11px; pointer-events: none; z-index: 3;
   }
+  #undo {
+    position: fixed; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 3;
+    width: 48px; height: 48px; border-radius: 24px; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75); font-size: 22px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #undo:active { background: rgba(255,255,255,0.25); }
   video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; pointer-events: none; }
   canvas { z-index: 0; }
   #dbg {
@@ -52,6 +60,7 @@
 <div id="flash"></div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
+<div id="undo" aria-label="deshacer última foto">↶</div>
 <div id="dbg"></div>
 <script src="game.js"></script>
 <script>

@@ -2,7 +2,7 @@
 // Mirás girando el celu (giroscopio). Mantenés apretado para caminar hacia donde mirás.
 // Frente a vos flota un rectángulo con lo que ve la cámara. Tocás: la foto queda fija ahí.
 // Arrastrar de costado gira el mundo (para acomodarlo si arrancó torcido).
-const VERSION = 'v3.3';
+const VERSION = 'v3.4';
 document.getElementById('ver').textContent = VERSION;
 
 const canvas = document.getElementById('c');
@@ -213,8 +213,21 @@ function matrix(b) {
 // ---------- obras (fotos fijas en el espacio) ----------
 const works = []; // {id, c, r, u, w, h, tex, buf}
 
+// las texturas de las obras van a 512px: alcanza de sobra para verlas y entran muchas en memoria
+// (a 1280px cada foto ocupaba ~13MB y con 20 fotos iOS mataba la página)
+const TEX_MAX = 512;
+const smallC = document.createElement('canvas');
+const smallX = smallC.getContext('2d');
+function small(src) {
+  const sw = src.naturalWidth || src.videoWidth || src.width, sh = src.naturalHeight || src.videoHeight || src.height;
+  const k = Math.min(1, TEX_MAX / Math.max(sw, sh));
+  smallC.width = Math.max(1, Math.round(sw * k)); smallC.height = Math.max(1, Math.round(sh * k));
+  smallX.drawImage(src, 0, 0, smallC.width, smallC.height);
+  return smallC;
+}
+
 function addWork(o, img) {
-  const w = { ...o, tex: texture(img), buf: gl.createBuffer() };
+  const w = { ...o, tex: texture(small(img)), buf: gl.createBuffer() };
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
   gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h), gl.STATIC_DRAW);
   works.push(w);
@@ -248,21 +261,40 @@ async function store(mode, fn) {
   });
 }
 async function loadWorks() {
-  const all = await store('readonly', s => s.getAll());
-  for (const o of all || []) {
+  if (/[?&]borrar/.test(location.search)) {           // escape: jojochaher.github.io/juego/?borrar
+    await store('readwrite', s => s.clear());
+    history.replaceState(null, '', location.pathname);
+  }
+  const keys = await store('readonly', s => s.getAllKeys());
+  for (const k of keys || []) {                       // de a una, para no juntar todas en memoria
+    const o = await store('readonly', s => s.get(k));
+    if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
     const img = new Image(); img.src = url;
-    try { await img.decode(); addWork(o, img); } catch (e) {}
-    URL.revokeObjectURL(url);
+    try { await img.decode(); delete o.blob; addWork(o, img); } catch (e) {}
+    img.src = ''; URL.revokeObjectURL(url);
+    await new Promise(r => setTimeout(r, 0));
   }
 }
+
+async function undo() {
+  const w = works.pop();
+  if (!w) return;
+  gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
+  store('readwrite', s => s.delete(w.id)).catch(() => {});
+  if (navigator.vibrate) navigator.vibrate(10);
+  updateUndo();
+}
+const undoBtn = document.getElementById('undo');
+undoBtn.addEventListener('click', undo);
+function updateUndo() { undoBtn.style.display = works.length && started ? 'flex' : 'none'; }
 
 // ---------- cámara ----------
 let camReady = false;
 async function startCamera() {
   try {
     const s = await navigator.mediaDevices.getUserMedia({
-      audio: false, video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
+      audio: false, video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 960 } },
     });
     camState = 'stream ok';
     video.srcObject = s;
@@ -279,12 +311,13 @@ function shoot() {
   if (!camReady || !video.videoWidth) return;
   const b = basis();
   const pose = previewPose(b);
-  const k = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+  const k = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
   const c = document.createElement('canvas');
   c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
   c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose };
   addWork(o, c);
+  updateUndo();
   c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
@@ -313,6 +346,7 @@ startEl.addEventListener('click', async () => {
   const camP = startCamera();
   permState = await perm;
   startEl.remove();
+  updateUndo();
   await camP;
   setTimeout(() => {
     showHint(gyroMode
@@ -421,7 +455,12 @@ async function checkUpdate() {
   try {
     const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
     const m = (await r.text()).match(/const VERSION = '([^']+)'/);
-    if (m && m[1] !== VERSION && !ptr) location.reload();
+    if (m && m[1] !== VERSION && !ptr) {
+      // no recargar dos veces por la misma versión (el CDN a veces sirve viejo y nuevo mezclado)
+      if (sessionStorage.getItem('recargado') === m[1]) return;
+      sessionStorage.setItem('recargado', m[1]);
+      location.reload();
+    }
   } catch (e) {}
 }
 setInterval(checkUpdate, 30000);
