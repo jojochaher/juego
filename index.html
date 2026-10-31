@@ -17,40 +17,71 @@
     overscroll-behavior: none; touch-action: none;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     font-family: system-ui, -apple-system, sans-serif; color: #fff;
+    -webkit-tap-highlight-color: transparent;
   }
-  canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; }
+  canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; pointer-events: none; }
   #start {
     position: fixed; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 14px;
-    background: #0a0a0d; z-index: 2; text-align: center; padding: 24px;
+    background: #0a0a0d; z-index: 5; text-align: center; padding: 24px;
   }
   #start b { font-size: 22px; font-weight: 600; }
   #start span { font-size: 14px; color: rgba(255,255,255,0.5); max-width: 280px; line-height: 1.4; }
   #hint {
-    position: fixed; left: 0; right: 0; bottom: calc(28px + env(safe-area-inset-bottom));
-    text-align: center; color: rgba(255,255,255,0.7); font-size: 14px; line-height: 1.5;
-    pointer-events: none; transition: opacity 0.8s; text-shadow: 0 1px 4px #000; padding: 0 20px;
+    position: fixed; left: 0; right: 0; top: calc(56px + env(safe-area-inset-top));
+    text-align: center; color: rgba(255,255,255,0.75); font-size: 14px; line-height: 1.5;
+    pointer-events: none; transition: opacity 0.8s; text-shadow: 0 1px 4px #000; padding: 0 20px; z-index: 3;
   }
-  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 0.35s; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 0.35s; z-index: 4; }
   #ver {
-    position: fixed; left: 10px; bottom: calc(8px + env(safe-area-inset-bottom));
+    position: fixed; left: 10px; top: calc(8px + env(safe-area-inset-top));
     color: rgba(255,255,255,0.25); font-size: 11px; pointer-events: none; z-index: 3;
   }
-  #undo {
-    position: fixed; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 3;
-    width: 48px; height: 48px; border-radius: 24px; display: none;
-    align-items: center; justify-content: center;
-    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75); font-size: 22px;
-    -webkit-tap-highlight-color: transparent;
+  .ctl { position: fixed; z-index: 3; touch-action: none; }
+  /* joystick */
+  #joy {
+    left: 22px; bottom: calc(34px + env(safe-area-inset-bottom));
+    width: 120px; height: 120px; border-radius: 60px;
+    background: rgba(255,255,255,0.06); border: 1.5px solid rgba(255,255,255,0.18);
   }
-  #undo:active { background: rgba(255,255,255,0.25); }
-  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; pointer-events: none; }
-  canvas { z-index: 0; }
-  #dbg {
-    position: fixed; left: 8px; right: 8px; top: calc(6px + env(safe-area-inset-top));
-    font: 11px/1.35 ui-monospace, Menlo, monospace; color: #9f9; white-space: pre-wrap;
-    pointer-events: none; z-index: 3; text-shadow: 0 1px 2px #000;
+  #knob {
+    position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 25px;
+    background: rgba(255,255,255,0.28); pointer-events: none;
   }
+  /* barra de distancia */
+  #dist {
+    right: 10px; top: 30%; height: 34%; width: 44px;
+  }
+  #dist::before {
+    content: ''; position: absolute; left: 20px; top: 0; bottom: 0; width: 4px; border-radius: 2px;
+    background: rgba(255,255,255,0.18);
+  }
+  #distKnob {
+    position: absolute; left: 8px; width: 28px; height: 28px; margin-top: -14px; border-radius: 14px;
+    background: rgba(255,255,255,0.75); pointer-events: none;
+  }
+  #dist .lab { position: absolute; right: 48px; font-size: 11px; color: rgba(255,255,255,0.4); pointer-events: none; }
+  /* botones */
+  .btn {
+    display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  }
+  #shoot {
+    right: 26px; bottom: calc(46px + env(safe-area-inset-bottom));
+    width: 72px; height: 72px; box-sizing: border-box;
+    border: 4px solid rgba(255,255,255,0.9);
+  }
+  #shoot::after { content: ''; width: 54px; height: 54px; border-radius: 50%; background: rgba(255,120,80,0.95); }
+  #shoot:active::after { transform: scale(0.88); }
+  #drop {
+    right: 26px; bottom: calc(46px + env(safe-area-inset-bottom));
+    width: 72px; height: 72px; background: rgba(255,255,255,0.92); color: #111; font-size: 32px; font-weight: 600;
+  }
+  #trash {
+    right: 116px; bottom: calc(58px + env(safe-area-inset-bottom));
+    width: 48px; height: 48px; background: rgba(255,70,60,0.85);
+  }
+  .btn:active { filter: brightness(0.8); }
 </style>
 </head>
 <body>
@@ -58,10 +89,15 @@
 <video id="vid" playsinline muted autoplay></video>
 <div id="hint"></div>
 <div id="flash"></div>
+<div id="joy" class="ctl" style="display:none"><div id="knob"></div></div>
+<div id="dist" class="ctl" style="display:none"><span class="lab" style="top:-6px">lejos</span><span class="lab" style="bottom:-6px">cerca</span><div id="distKnob"></div></div>
+<div id="shoot" class="ctl btn" style="display:none" aria-label="sacar foto"></div>
+<div id="drop" class="ctl btn" style="display:none" aria-label="soltar">✓</div>
+<div id="trash" class="ctl btn" style="display:none" aria-label="borrar">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
-<div id="undo" aria-label="deshacer última foto">↶</div>
-<div id="dbg"></div>
 <script src="game.js"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
