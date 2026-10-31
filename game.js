@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v5';
+const VERSION = 'v5.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -19,7 +19,10 @@ window.addEventListener('unhandledrejection', e => showHint('error: ' + (e.reaso
 
 // --- unidades: metros. x derecha, y arriba, arrancás mirando -z ---
 const EYE = 1.6;
-const FOVX = 50 * Math.PI / 180;
+const FOV_STEPS = [35, 50, 65, 80, 100];   // campo horizontal en grados (botón fov)
+let fovDeg = 50;
+try { const f = +localStorage.getItem('fov'); if (FOV_STEPS.includes(f)) fovDeg = f; } catch (e) {}
+let FOVX = fovDeg * Math.PI / 180;
 const MOVE = 1.6;                 // m/s con el joystick a fondo
 const LOOK = 0.0045;              // radianes por px de arrastre
 const DIST_MIN = 0.3, DIST_MAX = 12;
@@ -243,7 +246,7 @@ function addWork(o, img) {
 // pose relativa a la cámara: x = derecha, y = arriba, z = adelante
 const toWorldV = (b, l) => add(add(mul(b.r, l[0]), mul(b.u, l[1])), mul(b.f, l[2]));
 const toLocalV = (b, v) => [dot(v, b.r), dot(v, b.u), dot(v, b.f)];
-const DEFAULT_W = 2 * Math.tan(FOVX / 2) * 0.58;           // a 1 m ocupa ~58% del ancho
+const DEFAULT_W = 2 * Math.tan(25 * Math.PI / 180) * 0.58;  // a 1 m, con fov 50°, ocupa ~58% del ancho
 
 function freshPreview(aspect = 4 / 3) {
   return { c: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0], w: DEFAULT_W, h: DEFAULT_W * aspect, uv: FULL.slice(), aspect, fresh: true };
@@ -251,7 +254,9 @@ function freshPreview(aspect = 4 / 3) {
 let preview = freshPreview();
 let held = null;            // { work, L }
 let mode = 'mover';
-const cur = () => held ? held.L : preview;
+const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : preview; };
+// distancia de lo que está en la mano (sin cortar el giro hacia la foto)
+const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur().c);
 
 function worldPose(b, L) {
   return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice() };
@@ -262,9 +267,8 @@ function scaleBy(L, k) {
   k = clamp(k, 0.02 / Math.min(L.w, L.h), 40 / Math.max(L.w, L.h));
   L.w *= k; L.h *= k;
 }
-function setDist(L, d) {
-  const k = d / len(L.c);
-  L.c = mul(L.c, k); L.w *= k; L.h *= k;
+function setDist(L, d) {   // acercar = se ve más grande, alejar = más chica (no cambia el tamaño real)
+  L.c = mul(L.c, d / len(L.c));
 }
 function rollBy(L, a) {   // giro en el plano de la foto
   const n = norm(cross(L.r, L.u));
@@ -322,7 +326,7 @@ function touchOnHeld(L, x, y) {
 }
 function resetHeld() {
   const L = cur();
-  const d = len(L.c);
+  const d = held ? len(L.c) : 1;                      // la vista previa vuelve a 1 m
   const aspect = held ? held.work.aspect : (video.videoWidth ? video.videoHeight / video.videoWidth : 4 / 3);
   const w = held ? L.w : DEFAULT_W * d;
   Object.assign(L, { c: [0, 0, d], r: [1, 0, 0], u: [0, 1, 0], w, h: w * aspect, uv: FULL.slice() });
@@ -330,18 +334,37 @@ function resetHeld() {
   ui();
 }
 
+// agarrar: la cámara gira hasta que la foto queda en el centro (la foto no se mueve);
+// recién ahí queda pegada a la cámara
 function pick(w) {
   if (held) return;
-  const b = basis();
-  held = { work: w, L: { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice() } };
+  held = { work: w, L: null, aim: { t: 0 } };
   setMode('mover');
   buzz(12);
   ui();
+}
+function finishAim() {
+  const w = held.work, b = basis();
+  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice() };
+  held.aim = null;
+}
+function stepAim(dt) {
+  const a = held.aim;
+  a.t += dt;
+  const f = basis().f, d = norm(sub(held.work.c, pos));
+  let eh = heading(d) - heading(f); eh = Math.atan2(Math.sin(eh), Math.cos(eh));
+  const ee = Math.asin(clamp(d[1], -1, 1)) - Math.asin(clamp(f[1], -1, 1));
+  if (Math.hypot(d[0], d[2]) < 0.05) eh = 0;          // foto justo arriba o abajo: el rumbo no importa
+  const k = 1 - Math.exp(-dt * 14);
+  yawOff += eh * k;
+  pitchOff = clamp(pitchOff + ee * k, -1.4, 1.4);
+  if ((Math.abs(eh) < 0.002 && Math.abs(ee) < 0.002) || a.t > 0.9) finishAim();
 }
 function releaseHold() { held = null; setMode('mover'); ui(); }
 
 function drop() {
   if (!held) return;
+  cur();
   const w = held.work;
   Object.assign(w, worldPose(basis(), held.L));
   setBuf(w);
@@ -476,6 +499,7 @@ function ui() {
   show(joyEl, started);
   show(invEl, started);
   show(homeBtn, started);
+  show($('fov'), started);
   show(gyroBtn, started && gyroMode);
   show(distEl, canEdit);
   show(modesEl, canEdit);
@@ -483,7 +507,7 @@ function ui() {
   show(dropBtn, started && holding);
   show(trashBtn, started && holding);
   show(cancelBtn, started && holding);
-  distKnob.style.top = (1 - distT(len(cur().c))) * 100 + '%';
+  distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
 shootBtn.addEventListener('click', shoot);
@@ -501,6 +525,17 @@ invEl.addEventListener('click', () => {
   paintInv();
 });
 paintInv();
+
+// ---------- campo de visión ----------
+const fovBtn = $('fov');
+function paintFov() { fovBtn.textContent = 'fov ' + fovDeg + '°'; }
+fovBtn.addEventListener('click', () => {
+  fovDeg = FOV_STEPS[(FOV_STEPS.indexOf(fovDeg) + 1) % FOV_STEPS.length];
+  FOVX = fovDeg * Math.PI / 180;
+  try { localStorage.setItem('fov', String(fovDeg)); } catch (e) {}
+  paintFov();
+});
+paintFov();
 
 // ---------- volver al inicio ----------
 homeBtn.addEventListener('click', () => {
@@ -677,6 +712,7 @@ function frame(now) {
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  if (held && held.aim) stepAim(dt);
   const b = basis();
 
   if (joy.x || joy.y) {
@@ -724,7 +760,7 @@ function draw(now) {
 
   // en la mano
   if (held) {
-    drawFramed(worldPose(b, held.L), held.work.tex, [1, 1, 1]);
+    drawFramed(held.aim ? held.work : worldPose(b, held.L), held.work.tex, [1, 1, 1]);
   } else if (camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
@@ -741,7 +777,7 @@ function draw(now) {
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
 
-  if (distPtr == null) distKnob.style.top = (1 - distT(len(cur().c))) * 100 + '%';
+  if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
 // ---------- auto-actualización ----------
@@ -765,7 +801,7 @@ loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
   pos, works, joy,
-  get held() { return held; }, get preview() { return preview; }, get mode() { return mode; },
+  get held() { return held; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
