@@ -2,7 +2,7 @@
 // Mirás girando el celu (giroscopio). Mantenés apretado para caminar hacia donde mirás.
 // Frente a vos flota un rectángulo con lo que ve la cámara. Tocás: la foto queda fija ahí.
 // Arrastrar de costado gira el mundo (para acomodarlo si arrancó torcido).
-const VERSION = 'v3.2';
+const VERSION = 'v3.3';
 document.getElementById('ver').textContent = VERSION;
 
 const canvas = document.getElementById('c');
@@ -69,11 +69,12 @@ window.addEventListener('deviceorientation', e => {
 });
 
 function screenAngle() {
-  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  return typeof window.orientation === 'number' ? window.orientation : 0;
 }
 
 // orientación de la cámara como cuaternión (misma matemática que DeviceOrientationControls de three.js)
-function orientation() {
+function camQuat() {
   let q;
   if (gyroMode && gyro) {
     const R = Math.PI / 180;
@@ -90,7 +91,7 @@ function orientation() {
 }
 
 function basis() {
-  const q = orientation();
+  const q = camQuat();
   return { f: qrot(q, [0, 0, -1]), u: qrot(q, [0, 1, 0]), r: qrot(q, [1, 0, 0]) };
 }
 
@@ -413,6 +414,18 @@ function draw(now) {
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
 }
+
+// ---------- auto-actualización ----------
+// Si hay una versión nueva publicada, recarga sola (las fotos ya están guardadas).
+async function checkUpdate() {
+  try {
+    const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
+    const m = (await r.text()).match(/const VERSION = '([^']+)'/);
+    if (m && m[1] !== VERSION && !ptr) location.reload();
+  } catch (e) {}
+}
+setInterval(checkUpdate, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
 
 loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 
