@@ -2,7 +2,7 @@
 // Mirás girando el celu (giroscopio). Mantenés apretado para caminar hacia donde mirás.
 // Frente a vos flota un rectángulo con lo que ve la cámara. Tocás: la foto queda fija ahí.
 // Arrastrar de costado gira el mundo (para acomodarlo si arrancó torcido).
-const VERSION = 'v3';
+const VERSION = 'v3.1';
 document.getElementById('ver').textContent = VERSION;
 
 const canvas = document.getElementById('c');
@@ -11,6 +11,20 @@ const hint = document.getElementById('hint');
 const flash = document.getElementById('flash');
 const startEl = document.getElementById('start');
 const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+
+// --- diagnóstico en pantalla (temporal) ---
+const dbgEl = document.getElementById('dbg');
+let lastErr = '';
+window.addEventListener('error', e => { lastErr = e.message; });
+window.addEventListener('unhandledrejection', e => { lastErr = String(e.reason && (e.reason.name + ': ' + e.reason.message) || e.reason); });
+function dbg() {
+  const g = gyro ? `${gyro.a.toFixed(0)} ${gyro.b.toFixed(0)} ${gyro.g.toFixed(0)}` : '-';
+  dbgEl.textContent =
+    `gl:${gl ? 'ok' : 'NO'} cam:${camState} video:${video.videoWidth}x${video.videoHeight} rs:${video.readyState} paused:${video.paused}\n` +
+    `gyro:${gyroMode ? 'si' : 'no'} [${g}] perm:${permState} obras:${works.length}\n` +
+    (lastErr ? 'ERR: ' + lastErr : '');
+}
+let camState = 'sin pedir', permState = '-';
 
 // --- unidades: metros. x derecha, y arriba, arrancás mirando -z ---
 const EYE = 1.6;
@@ -236,10 +250,13 @@ async function startCamera() {
     const s = await navigator.mediaDevices.getUserMedia({
       audio: false, video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
     });
+    camState = 'stream ok';
     video.srcObject = s;
     await video.play();
+    camState = 'play ok';
     camReady = true;
   } catch (e) {
+    camState = 'ERROR ' + (e && e.name || e);
     showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
   }
 }
@@ -275,13 +292,14 @@ let started = false;
 startEl.addEventListener('click', async () => {
   if (started) return;
   started = true;
-  try {
-    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
-      await DeviceOrientationEvent.requestPermission();
-    }
-  } catch (e) {}
+  let perm = Promise.resolve('n/a');
+  if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+    perm = DeviceOrientationEvent.requestPermission().catch(e => 'error ' + (e && e.name || e));
+  }
+  const camP = startCamera();
+  permState = await perm;
   startEl.remove();
-  await startCamera();
+  await camP;
   setTimeout(() => {
     showHint(gyroMode
       ? 'girá con el celu para mirar<br>mantené apretado para caminar<br>tocá para sacar la foto'
@@ -324,6 +342,11 @@ function walking() { return ptr && !ptr.moved && performance.now() - ptr.t0 >= H
 // ---------- loop ----------
 let last = performance.now();
 function frame(now) {
+  try { draw(now); } catch (e) { lastErr = (e && (e.name + ': ' + e.message)) || String(e); }
+  dbg();
+  requestAnimationFrame(frame);
+}
+function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   const b = basis();
@@ -362,18 +385,19 @@ function frame(now) {
   gl.uniformMatrix4fv(Q.m, false, m);
   for (const w of works) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
 
-  if (camReady && video.readyState >= 2) {
+  if (camReady) {
     const p = previewPose(b);
     // marco, un centímetro detrás
     const back = add(p.c, mul(b.f, 0.01));
     drawQuad(scratch, quadData(back, p.r, p.u, p.w + 0.03, p.h + 0.03), white, [1, 0.47, 0.31]);
+  }
+  if (camReady && video.readyState >= 2) {
+    const p = previewPose(b);
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
     drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h), videoTex, [1, 1, 1]);
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
-
-  requestAnimationFrame(frame);
 }
 
 loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
