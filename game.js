@@ -4,7 +4,7 @@
 // Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste)
 // flota frente a vos: dos dedos = escala y giro, barra de la derecha = distancia.
 // Obturador: la vista previa queda fija como foto. Tocar una foto la agarra; ✓ la suelta, tacho la borra.
-const VERSION = 'v4';
+const VERSION = 'v4.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -375,6 +375,7 @@ let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
   show(joyEl, started);
+  show(invEl, started);
   show(distEl, started && (camReady || hold.work));
   show(shootBtn, started && camReady && !hold.work);
   show(dropBtn, started && !!hold.work);
@@ -383,6 +384,18 @@ function ui() {
 }
 
 shootBtn.addEventListener('click', shoot);
+
+// ---------- invertir el arrastre de la cámara (se guarda en el celu) ----------
+const invEl = $('inv');
+let invertLook = false;
+try { invertLook = localStorage.getItem('invertir') === '1'; } catch (e) {}
+function paintInv() { invEl.textContent = invertLook ? 'arrastre: invertido' : 'arrastre: normal'; invEl.classList.toggle('on', invertLook); }
+invEl.addEventListener('click', () => {
+  invertLook = !invertLook;
+  try { localStorage.setItem('invertir', invertLook ? '1' : '0'); } catch (e) {}
+  paintInv();
+});
+paintInv();
 dropBtn.addEventListener('click', drop);
 trashBtn.addEventListener('click', trash);
 
@@ -457,9 +470,10 @@ canvas.addEventListener('pointermove', e => {
   }
   if (!t.moved && Math.hypot(t.x - t.x0, t.y - t.y0) > 8) t.moved = true;
   if (!t.moved) return;
-  // el mundo sigue al dedo
-  yawOff += dx * LOOK;
-  pitchOff = clamp(pitchOff + dy * LOOK, -1.4, 1.4);
+  // normal: el mundo sigue al dedo. invertido: la cámara sigue al dedo
+  const k = invertLook ? -LOOK : LOOK;
+  yawOff += dx * k;
+  pitchOff = clamp(pitchOff + dy * k, -1.4, 1.4);
 });
 
 function endTouch(e) {
@@ -573,7 +587,7 @@ loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 
 // para los tests (grados, como antes: yaw positivo = mirar a la derecha)
 window.__game = {
-  pos, works, hold, joy,
+  pos, works, hold, joy, get invertLook() { return invertLook; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };

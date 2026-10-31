@@ -82,6 +82,12 @@
     width: 48px; height: 48px; background: rgba(255,70,60,0.85);
   }
   .btn:active { filter: brightness(0.8); }
+  #inv {
+    right: 12px; top: calc(6px + env(safe-area-inset-top));
+    padding: 7px 12px; border-radius: 16px; font-size: 12px;
+    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7);
+  }
+  #inv.on { background: rgba(255,120,80,0.85); color: #fff; }
 </style>
 </head>
 <body>
@@ -96,6 +102,7 @@
 <div id="trash" class="ctl btn" style="display:none" aria-label="borrar">
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
 </div>
+<div id="inv" class="ctl" style="display:none"></div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
 <script src="game.js"></script>
