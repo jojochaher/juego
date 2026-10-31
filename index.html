@@ -29,7 +29,7 @@
   #start b { font-size: 22px; font-weight: 600; }
   #start span { font-size: 14px; color: rgba(255,255,255,0.5); max-width: 280px; line-height: 1.4; }
   #hint {
-    position: fixed; left: 0; right: 0; top: calc(56px + env(safe-area-inset-top));
+    position: fixed; left: 0; right: 0; top: calc(60px + env(safe-area-inset-top));
     text-align: center; color: rgba(255,255,255,0.75); font-size: 14px; line-height: 1.5;
     pointer-events: none; transition: opacity 0.8s; text-shadow: 0 1px 4px #000; padding: 0 20px; z-index: 3;
   }
@@ -78,16 +78,25 @@
     width: 72px; height: 72px; background: rgba(255,255,255,0.92); color: #111; font-size: 32px; font-weight: 600;
   }
   #trash {
-    right: 116px; bottom: calc(58px + env(safe-area-inset-bottom));
+    right: 172px; bottom: calc(58px + env(safe-area-inset-bottom));
     width: 48px; height: 48px; background: rgba(255,70,60,0.85);
   }
   .btn:active { filter: brightness(0.8); }
-  #inv {
-    right: 12px; top: calc(6px + env(safe-area-inset-top));
-    padding: 7px 12px; border-radius: 16px; font-size: 12px;
-    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7);
+  #top {
+    position: fixed; right: 10px; left: 40px; top: calc(6px + env(safe-area-inset-top));
+    display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; z-index: 3; pointer-events: none;
   }
-  #inv.on { background: rgba(255,120,80,0.85); color: #fff; }
+  .pill {
+    position: static; pointer-events: auto;
+    padding: 7px 11px; border-radius: 16px; font-size: 12px; white-space: nowrap;
+    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.75);
+  }
+  .pill.on { background: rgba(255,120,80,0.85); color: #fff; }
+  .pill:active { background: rgba(255,255,255,0.25); }
+  #cancel {
+    right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
+    width: 48px; height: 48px; background: rgba(255,255,255,0.18); color: #fff; font-size: 20px;
+  }
 </style>
 </head>
 <body>
@@ -102,7 +111,12 @@
 <div id="trash" class="ctl btn" style="display:none" aria-label="borrar">
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
 </div>
-<div id="inv" class="ctl" style="display:none"></div>
+<div id="top">
+  <div id="home" class="ctl pill" style="display:none">inicio</div>
+  <div id="gyroT" class="ctl pill" style="display:none"></div>
+  <div id="inv" class="ctl pill" style="display:none"></div>
+</div>
+<div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
 <script src="game.js"></script>

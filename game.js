@@ -4,13 +4,14 @@
 // Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste)
 // flota frente a vos: dos dedos = escala y giro, barra de la derecha = distancia.
 // Obturador: la vista previa queda fija como foto. Tocar una foto la agarra; ✓ la suelta, tacho la borra.
-const VERSION = 'v4.1';
+const VERSION = 'v4.2';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
 const canvas = $('c'), video = $('vid'), hint = $('hint'), flash = $('flash'), startEl = $('start');
 const joyEl = $('joy'), knobEl = $('knob'), distEl = $('dist'), distKnob = $('distKnob');
-const shootBtn = $('shoot'), dropBtn = $('drop'), trashBtn = $('trash');
+const shootBtn = $('shoot'), dropBtn = $('drop'), trashBtn = $('trash'), cancelBtn = $('cancel');
+const homeBtn = $('home'), gyroBtn = $('gyroT');
 const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
 
 window.addEventListener('error', e => showHint('error: ' + e.message));
@@ -50,11 +51,13 @@ function qaxis(ax, ang) { const s = Math.sin(ang / 2); return [ax[0] * s, ax[1] 
 // ---------- orientación: giroscopio + ajuste con el dedo ----------
 let gyro = null, gyroMode = false;
 let yawOff = 0, pitchOff = 0;     // lo que sumás arrastrando (radianes)
+let gyroOn = true;                // se puede apagar con el botón de arriba
+try { gyroOn = localStorage.getItem('giroscopio') !== '0'; } catch (e) {}
 
 window.addEventListener('deviceorientation', e => {
   if (e.alpha == null) return;
   gyro = { a: e.alpha, b: e.beta, g: e.gamma };
-  gyroMode = true;
+  if (!gyroMode) { gyroMode = true; ui(); }   // recién ahora sabemos que hay giroscopio
 });
 
 function screenAngle() {
@@ -65,7 +68,7 @@ function screenAngle() {
 // giro del mundo (yaw) * giroscopio * inclinación propia (pitch, en el eje de la cámara)
 function camQuat() {
   let q = [0, 0, 0, 1];
-  if (gyroMode && gyro) {
+  if (gyroMode && gyro && gyroOn) {
     const R = Math.PI / 180;
     const x = gyro.b * R, y = gyro.a * R, z = -gyro.g * R; // euler YXZ (como DeviceOrientationControls)
     const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
@@ -266,6 +269,13 @@ function drop() {
   releaseHold();
 }
 
+// soltar sin cambios: la foto vuelve a donde estaba
+function cancelHold() {
+  if (!hold.work) return;
+  buzz(8);
+  releaseHold();
+}
+
 function trash() {
   const w = hold.work;
   if (!w) return;
@@ -380,6 +390,9 @@ function ui() {
   show(shootBtn, started && camReady && !hold.work);
   show(dropBtn, started && !!hold.work);
   show(trashBtn, started && !!hold.work);
+  show(cancelBtn, started && !!hold.work);
+  show(homeBtn, started);
+  show(gyroBtn, started && gyroMode);
   distKnob.style.top = (1 - distT(hold.dist)) * 100 + '%';
 }
 
@@ -398,6 +411,37 @@ invEl.addEventListener('click', () => {
 paintInv();
 dropBtn.addEventListener('click', drop);
 trashBtn.addEventListener('click', trash);
+cancelBtn.addEventListener('click', cancelHold);
+
+// ---------- volver al inicio ----------
+homeBtn.addEventListener('click', () => {
+  pos[0] = 0; pos[1] = EYE; pos[2] = 0;
+  pitchOff = 0;
+  // mirar hacia el frente original (-z), con o sin giroscopio
+  yawOff = 0;
+  yawOff = -heading(basis().f);
+  buzz(10);
+});
+
+// rumbo horizontal de una dirección (0 = mirando -z, positivo = girado a la izquierda)
+function heading(f) { return Math.atan2(-f[0], -f[2]); }
+
+// ---------- prender/apagar el giroscopio sin que salte la vista ----------
+function paintGyro() { gyroBtn.textContent = gyroOn ? 'giroscopio: sí' : 'giroscopio: no'; gyroBtn.classList.toggle('on', !gyroOn); }
+gyroBtn.addEventListener('click', () => {
+  const f = basis().f;                      // hacia dónde mirás ahora
+  gyroOn = !gyroOn;
+  try { localStorage.setItem('giroscopio', gyroOn ? '1' : '0'); } catch (e) {}
+  if (gyroOn) {
+    pitchOff = 0; yawOff = 0;               // el giroscopio vuelve a mandar la inclinación
+    yawOff = heading(f) - heading(basis().f);
+  } else {
+    pitchOff = Math.asin(clamp(f[1], -1, 1));
+    yawOff = heading(f);
+  }
+  paintGyro();
+});
+paintGyro();
 
 // ---------- barra de distancia (arriba = más lejos) ----------
 const LMIN = Math.log(DIST_MIN), LMAX = Math.log(DIST_MAX);
@@ -587,7 +631,7 @@ loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 
 // para los tests (grados, como antes: yaw positivo = mirar a la derecha)
 window.__game = {
-  pos, works, hold, joy, get invertLook() { return invertLook; },
+  pos, works, hold, joy, get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };
