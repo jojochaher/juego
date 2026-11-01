@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v9';
+const VERSION = 'v9.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -496,13 +496,24 @@ function workAt(x, y) {
 }
 
 // ---------- guardado (solo en el celu) ----------
+// bug conocido de Safari/iOS: al reabrir la app, indexedDB.open a veces no responde nunca (hasta que se lo
+// vuelve a "tocar"). Se lo pincha cada 150 ms y, si en 6 s no abre, se rinde (el juego sigue sin el museo guardado).
 const db = new Promise((res, rej) => {
+  let listo = false;
   const r = indexedDB.open('juego', 2);
   r.onupgradeneeded = () => {
     if (!r.result.objectStoreNames.contains('obras')) r.result.createObjectStore('obras', { keyPath: 'id' });
   };
-  r.onsuccess = () => res(r.result);
-  r.onerror = () => rej(r.error);
+  r.onsuccess = () => { listo = true; res(r.result); };
+  r.onerror = () => { listo = true; rej(r.error); };
+  let n = 0;
+  const pinchar = setInterval(() => {
+    if (listo) { if (n) diag(`guardado: abrió después de ${n * 150} ms`); return clearInterval(pinchar); }
+    n++;
+    if (n === 2) diag('guardado: indexedDB tarda en abrir');
+    try { if (indexedDB.databases) indexedDB.databases().catch(() => {}); } catch (e) {}
+    if (n > 40) { clearInterval(pinchar); diag('guardado: indexedDB no responde'); listo = true; rej(new Error('indexedDB no responde')); }
+  }, 150);
 });
 async function store(m, fn) {
   const d = await db;
@@ -523,10 +534,14 @@ async function loadWorks() {
     if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
     const img = new Image(); img.src = url;
-    try { await img.decode(); if (!sala.active) addWork(o, img); } catch (e) {}
+    try {
+      await Promise.race([img.decode(), new Promise((_, rej) => setTimeout(() => rej(new Error('tardó')), 5000))]);
+      if (!sala.active) addWork(o, img);
+    } catch (e) { diag('museo: no pude abrir una foto (' + e.message + ')'); }
     img.src = ''; URL.revokeObjectURL(url);
     await new Promise(r => setTimeout(r, 0));
   }
+  diag(`museo: ${works.length} fotos cargadas`);
 }
 
 // ---------- cámara (un ítem que se equipa y se guarda) ----------
@@ -905,7 +920,14 @@ startEl.addEventListener('click', async () => {
 
 // ---------- loop ----------
 let last = performance.now();
+let ultimoCuadro = 0, cuadros = 0;
+setInterval(() => {
+  if (document.hidden || !started) return;
+  if (performance.now() - ultimoCuadro > 3000) diagUna('no se dibuja hace ' + Math.round((performance.now() - ultimoCuadro) / 1000) + ' s' + (gl.isContextLost() ? ' (webgl perdido)' : ''));
+}, 3000);
 function frame(now) {
+  ultimoCuadro = performance.now();
+  if (++cuadros === 60) diag('dibujando ok');
   if (!gl.isContextLost()) {
     try { draw(now); pantallaOk(now); } catch (e) { showHint('error: ' + e.message); diagUna('ERROR dibujando: ' + e.message + ' ' + ((e.stack || '').split('\n')[1] || '').trim()); }
   }
@@ -1053,7 +1075,9 @@ document.addEventListener('visibilitychange', () => {
 
 ui();
 const salaPrevia = salaGuardada();
-(salaPrevia ? salaEntrar(salaPrevia) : loadWorks()).catch(() => {}).finally(() => requestAnimationFrame(frame));
+// el dibujo arranca ya, sin esperar a que cargue nada (si el guardado se traba, antes quedaba la pantalla vacía)
+requestAnimationFrame(frame);
+(salaPrevia ? salaEntrar(salaPrevia) : loadWorks()).catch(e => diag('carga: falló ' + (e && e.message || e)));
 
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
