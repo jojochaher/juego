@@ -43,7 +43,12 @@ function salaGuardada() { try { return localStorage.getItem('sala'); } catch (e)
 
 async function salaEntrarConPass(pass) {
   if ((pass || '').length < 6) { showHint('la contraseña tiene que tener 6 letras o más'); return; }
-  await salaEntrar(await salaHash(pass));
+  const h = await salaHash(pass);
+  try { localStorage.setItem('salaPass', JSON.stringify({ h, p: pass })); } catch (e) {}   // solo en este celu, para poder verla
+  await salaEntrar(h);
+}
+function salaClave() {
+  try { const o = JSON.parse(localStorage.getItem('salaPass') || 'null'); return o && o.h === sala.hash ? o.p : null; } catch (e) { return null; }
 }
 
 async function salaEntrar(hash) {
@@ -68,7 +73,7 @@ function salaSalir() {
   salaCerrarConexiones();
   if (held) releaseHold();
   sala.active = false; sala.hash = null; sala.gente.clear();
-  try { localStorage.removeItem('sala'); } catch (e) {}
+  try { localStorage.removeItem('sala'); localStorage.removeItem('salaPass'); } catch (e) {}
   clearWorks();
   loadWorks().catch(() => {});
   showHint('volviste a tu museo');
@@ -207,6 +212,13 @@ function salaEnviarPresencia() {
     col: salaColor.map(v => Math.round(v * 100) / 100),
     cam: camOn && camReady ? 1 : 0,
   };
+  // lo que tengo en la mano (una foto agarrada o la vista previa de la cámara), para que los demás lo vean
+  const L = held ? (held.aim ? held.work : worldPose(basis(), held.L)) : (camOn && camReady ? worldPose(basis(), preview) : null);
+  if (L) {
+    const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
+    est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
+    if (held) est.mid = held.work.id;
+  }
   const s = JSON.stringify(est);
   const now = Date.now();
   if (s === sala.ultimoEstado && now - sala.ultimoEnvio < 5000) return;   // sin cambios: latido cada 5 s
@@ -226,6 +238,13 @@ function salaCambioGente(path, data, type) {
   rtcSync();
 }
 
+// fotos que otro tiene agarradas: no se dibujan en su lugar (se ven en su mano)
+function salaEnManos() {
+  const s = new Set();
+  if (sala.active) for (const p of sala.gente.values()) if (p.mano && p.mano.mid) s.add(p.mano.mid);
+  return s;
+}
+
 function salaPersona(id, d) {
   if (id === salaYo) return;
   if (!d || !d.p) { sala.gente.delete(id); return; }
@@ -237,6 +256,12 @@ function salaPersona(id, d) {
   p.target = { p: d.p, yaw: d.yaw || 0, pitch: d.pitch || 0 };
   p.col = d.col || [0.8, 0.8, 0.8];
   p.cam = !!d.cam;
+  const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
+  if (m) {
+    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), mid: d.mid || null };
+    if (!p.mano || p.mano.mid !== t.mid) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };
+    p.manoT = t;
+  } else { p.mano = p.manoT = null; }
   p.t = d.t || Date.now();
   p.visto = Date.now();
 }
@@ -267,6 +292,15 @@ function salaDisco() {
 }
 
 const LIMB = 0.05;   // grosor de los palitos (m)
+let salaOscuroTex = null;
+function salaOscuro() {
+  if (salaOscuroTex) return salaOscuroTex;
+  salaOscuroTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, salaOscuroTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([22, 22, 26]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  return salaOscuroTex;
+}
 function salaPalo(a, b, col) {
   const mid = mul(add(a, b), 0.5);
   const d = sub(b, a), L = len(d);
@@ -348,10 +382,25 @@ function salaDraw(b, dt) {
       salaJunta(sh, col); salaJunta(elbow, col); salaJunta(hand, col);
       if (s > 0 && p.raise > 0.5) drawQuad(scratch, quadData(add(hand, mul(look, 0.02)), lookRight, norm(cross(lookRight, look)), 0.13, 0.09), white, dark);
     }
-    // cabeza: si tiene la cara prendida y te mira, se ve su cara en vivo (en pausa si sostiene la cámara)
+    // lo que tiene en la mano: la foto que está moviendo o lo que está encuadrando con la cámara
+    if (p.mano) {
+      const T = p.manoT, M = p.mano;
+      for (let i = 0; i < 3; i++) { M.c[i] += (T.c[i] - M.c[i]) * k; M.r[i] += (T.r[i] - M.r[i]) * k; M.u[i] += (T.u[i] - M.u[i]) * k; }
+      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv;
+      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv };
+      if (M.mid) {
+        const w = works.find(x => x.id === M.mid);
+        if (w) drawFramed(pose, w.tex, col);
+      } else {
+        const v = p.cam && rtcVista(id);
+        if (v) drawFramed({ ...pose, uv: FULL }, v, col);
+        else drawFramed({ ...pose, uv: FULL }, salaOscuro(), col);
+      }
+    }
+    // cabeza: si tiene la cara prendida y te mira, se ve su cara en vivo (congelada si sostiene la cámara)
     rtcBoca(id, E);
     const mira = dot(look, sub(pos, E)) > 0;
-    const cara = rtcCara(id);
+    const cara = rtcCara(id, p.cam);
     if (cara && mira) {
       salaBola(add(E, mul(norm(sub(E, pos)), 0.01)), 0.2, col, b);       // aro de su color, apenas detrás
       salaBola(E, 0.18, p.cam ? [0.5, 0.5, 0.5] : [1, 1, 1], b, cara);
@@ -367,18 +416,22 @@ function salaDraw(b, dt) {
 
 // ---------- panel de la sala ----------
 const salaBtn = document.getElementById('salaBtn'), salaPanel = document.getElementById('salaPanel');
-const salaPass = document.getElementById('salaPass');
+const salaPass = document.getElementById('salaPass'), salaVer2 = document.getElementById('salaVer2');
 function salaPintar() {
   const n = sala.gente.size;
   salaBtn.textContent = sala.active ? (n ? `sala · ${n + 1}` : 'sala ·') : 'sala';
   salaBtn.classList.toggle('on', sala.active);
   document.getElementById('salaFuera').style.display = sala.active ? 'none' : '';
   document.getElementById('salaDentro').style.display = sala.active ? '' : 'none';
+  const clave = sala.active ? salaClave() : null, verla = salaVer2.textContent === 'ocultar';
+  document.getElementById('salaClave').textContent = clave == null ? 'no está guardada en este celu (volvé a entrar con ella)' : verla ? clave : '•'.repeat(clave.length);
+  salaVer2.style.display = clave == null ? 'none' : '';
   document.getElementById('salaGente').textContent = n === 0 ? 'por ahora estás solo' : n === 1 ? 'hay 1 persona más' : `hay ${n} personas más`;
 }
 salaBtn.addEventListener('click', () => {
   const open = salaPanel.style.display === 'none';
   salaPanel.style.display = open ? '' : 'none';
+  if (open) { salaVer2.textContent = 'ver'; salaPintar(); }
   if (open && !sala.active) setTimeout(() => salaPass.focus(), 50);
 });
 document.getElementById('salaEntrar').addEventListener('click', async () => {
@@ -390,6 +443,7 @@ document.getElementById('salaVer').addEventListener('click', () => {
   salaPass.type = ver ? 'text' : 'password';
   document.getElementById('salaVer').textContent = ver ? 'ocultar' : 'ver';
 });
+salaVer2.addEventListener('click', () => { salaVer2.textContent = salaVer2.textContent === 'ver' ? 'ocultar' : 'ver'; salaPintar(); });
 salaPass.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('salaEntrar').click(); });
 document.getElementById('salaSalir').addEventListener('click', () => { salaSalir(); salaPanel.style.display = 'none'; });
 salaPintar();

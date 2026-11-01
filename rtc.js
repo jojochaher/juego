@@ -52,9 +52,15 @@ function rtcStop() {
   rtcPintar();
 }
 
-// micrófono y cara según preferencias y según si la cámara de fotos está equipada
-async function rtcMedios() {
-  if (!rtc.on) return;
+// micrófono y cara según preferencias y según si la cámara de fotos está equipada.
+// De a un pedido por vez (dos pedidos juntos de la frontal en iPhone dejan una muerta) y recién después de tocar "entrar".
+let rtcMediosCola = Promise.resolve();
+function rtcMedios() { return (rtcMediosCola = rtcMediosCola.then(rtcMediosYa, rtcMediosYa)); }
+const rtcViva = s => s && s.getTracks().some(t => t.readyState === 'live');
+async function rtcMediosYa() {
+  if (!rtc.on || !started) { rtcPintar(); return; }
+  if (rtc.mic && !rtcViva(rtc.mic)) rtc.mic = null;
+  if (rtc.cara && !rtcViva(rtc.cara)) rtc.cara = null;
   if (rtc.micOn && !rtc.mic) {
     try { rtc.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false }); }
     catch (e) { showHint('no pude abrir el micrófono'); rtc.micOn = false; }
@@ -65,7 +71,7 @@ async function rtcMedios() {
     try {
       rtc.cara = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 320 } } });
       if (!rtc.on || camOn || !rtc.caraOn) { rtc.cara.getTracks().forEach(t => t.stop()); rtc.cara = null; }
-    } catch (e) { showHint('no pude abrir la cámara frontal'); }
+    } catch (e) { rtc.caraFallo = Date.now(); if (!rtc.caraAviso) showHint('no pude abrir la cámara frontal'); rtc.caraAviso = true; }
   }
   if (!quieroCara && rtc.cara) { rtc.cara.getTracks().forEach(t => t.stop()); rtc.cara = null; }
   const yo = document.getElementById('yoCara');
@@ -82,14 +88,40 @@ function rtcSoltarCara() {
   const yo = document.getElementById('yoCara'); yo.srcObject = null; yo.style.display = 'none';
 }
 
+// por el video va tu cara o, con la cámara de fotos equipada, lo que estás encuadrando
+function rtcVideoPropio() {
+  if (rtc.cara) return rtc.cara.getVideoTracks()[0];
+  const s = camOn && camReady && video.srcObject;
+  const t = s && s.getVideoTracks()[0];
+  return t && t.readyState === 'live' ? t : null;
+}
 function rtcPonerPistas(p) {
   for (const t of p.pc.getTransceivers()) {
     const kind = t.receiver.track && t.receiver.track.kind;
     if (!t.sender || t.stopped) continue;
     if (kind === 'audio') t.sender.replaceTrack(rtc.mic ? rtc.mic.getAudioTracks()[0] : null).catch(() => {});
-    if (kind === 'video') t.sender.replaceTrack(rtc.cara ? rtc.cara.getVideoTracks()[0] : null).catch(() => {});
+    if (kind === 'video') {
+      const v = rtcVideoPropio();
+      if (t.sender.track !== v) t.sender.replaceTrack(v).catch(() => {});
+      try {   // liviano: la vista previa no necesita más
+        const prm = t.sender.getParameters();
+        if (prm.encodings && prm.encodings[0] && prm.encodings[0].maxBitrate !== 400000) { prm.encodings[0].maxBitrate = 400000; t.sender.setParameters(prm).catch(() => {}); }
+      } catch (e) {}
+    }
   }
 }
+function rtcPistas() { for (const p of rtc.peers.values()) rtcPonerPistas(p); }
+
+// el iPhone corta el micrófono o la cámara sin avisar (otra app, llamada, fondo): si se murieron, se vuelven a abrir
+setInterval(() => {
+  if (!rtc.on || !started || document.hidden) return;
+  const micMuerto = rtc.mic && !rtcViva(rtc.mic);
+  const caraMuerta = rtc.cara && !rtcViva(rtc.cara);
+  const faltaCara = !rtc.cara && rtc.caraOn && !camOn && Date.now() - (rtc.caraFallo || 0) > 10000;
+  const faltaMic = !rtc.mic && rtc.micOn;
+  if (micMuerto || caraMuerta || faltaCara || faltaMic) rtcMedios();
+  else rtcPistas();   // por si la cámara de fotos se reabrió
+}, 2000);
 
 // ---------- con quién conectarse ----------
 // por cada persona de la sala hay una conexión; llama el de id menor (así no se pisan)
@@ -168,11 +200,13 @@ function rtcCerrar(id) {
   if (p.audio) p.audio.remove();
   if (p.src) try { p.src.disconnect(); } catch (e) {}
   if (p.faceTex) gl.deleteTexture(p.faceTex);
+  if (p.vistaTex) gl.deleteTexture(p.vistaTex);
 }
 
 // ---------- lo que llega del otro ----------
 function rtcPistaRemota(p, track) {
   const s = new MediaStream([track]);
+  track.onunmute = () => { const el = track.kind === 'video' ? p.video : p.audio; if (el && el.paused) el.play().catch(() => {}); };
   if (track.kind === 'video') {
     if (!p.video) { p.video = document.createElement('video'); p.video.playsInline = true; p.video.muted = true; p.video.className = 'oculto'; document.body.appendChild(p.video); }
     p.video.srcObject = s; p.video.play().catch(() => {});
@@ -225,9 +259,11 @@ function rtcBoca(id, head) {
   else p.panner.setPosition(...head);
 }
 
-// cara del otro como textura redonda (el resto es transparente y el shader lo descarta)
-function rtcCara(id) {
+// cara del otro como textura redonda (el resto es transparente y el shader lo descarta).
+// congelar: está sosteniendo la cámara de fotos (el video trae lo que encuadra): queda la última cara
+function rtcCara(id, congelar) {
   const p = rtc.peers.get(id);
+  if (p && congelar) return p.faceOk ? p.faceTex : null;
   if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
   if (!p.faceC) {
     p.faceC = document.createElement('canvas'); p.faceC.width = p.faceC.height = 128;
@@ -250,6 +286,28 @@ function rtcCara(id) {
   return p.faceTex;
 }
 
+// lo que el otro está encuadrando con la cámara de fotos, como textura
+function rtcVista(id) {
+  const p = rtc.peers.get(id);
+  if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
+  const v = p.video, k = Math.min(1, 320 / Math.max(v.videoWidth, v.videoHeight));
+  const w = Math.max(1, Math.round(v.videoWidth * k)), h = Math.max(1, Math.round(v.videoHeight * k));
+  if (!p.vistaC) {
+    p.vistaC = document.createElement('canvas'); p.vistaX = p.vistaC.getContext('2d');
+    p.vistaTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, p.vistaTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  if (p.vistaC.width !== w || p.vistaC.height !== h) { p.vistaC.width = w; p.vistaC.height = h; }
+  p.vistaX.drawImage(v, 0, 0, w, h);
+  gl.bindTexture(gl.TEXTURE_2D, p.vistaTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, p.vistaC);
+  return p.vistaTex;
+}
+
 // ---------- botones mic / cara ----------
 function rtcPintar() {
   const mic = document.getElementById('micBtn'), cara = document.getElementById('caraBtn');
@@ -264,7 +322,7 @@ document.getElementById('micBtn').addEventListener('click', () => {
   rtcMedios();
 });
 document.getElementById('caraBtn').addEventListener('click', () => {
-  rtc.caraOn = !rtc.caraOn;
+  rtc.caraOn = !rtc.caraOn; rtc.caraAviso = false; rtc.caraFallo = 0;
   try { localStorage.setItem('cara', rtc.caraOn ? '1' : '0'); } catch (e) {}
   if (rtc.caraOn && camOn) showHint('tu cara se ve cuando guardás la cámara de fotos');
   rtcMedios();

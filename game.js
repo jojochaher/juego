@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v7.1';
+const VERSION = 'v7.2';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -457,6 +457,7 @@ async function startCamera() {
     video.srcObject = s;
     await video.play();
     camReady = true;
+    rtcPistas();   // en una sala, los demás ven lo que encuadrás
   } catch (e) {
     showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
   } finally {
@@ -755,6 +756,7 @@ startEl.addEventListener('click', async () => {
   setMode('mover');
   ui();
   if (camOn) await startCamera();
+  if (sala.active) rtcMedios();   // micrófono y cara recién después de tocar (en iPhone, pedirlos antes falla)
   showHint('joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla');
 });
 
@@ -811,7 +813,8 @@ function draw(now) {
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
   gl.useProgram(quadProg);
   gl.uniformMatrix4fv(Q.m, false, m);
-  for (const w of works) if (!held || w !== held.work) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
+  for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id)) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
 
   // en la mano
