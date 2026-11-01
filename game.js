@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v7';
+const VERSION = 'v7.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -849,7 +849,13 @@ async function checkUpdate() {
   } catch (e) {}
 }
 setInterval(checkUpdate, 30000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  checkUpdate();
+  // el iPhone apaga la cámara cuando la app pasa al fondo: al volver, si quedó muerta, se vuelve a abrir
+  const tr = video.srcObject && video.srcObject.getVideoTracks()[0];
+  if (camOn && camReady && (!tr || tr.readyState === 'ended')) { stopCamera(); startCamera(); }
+});
 
 ui();
 const salaPrevia = salaGuardada();

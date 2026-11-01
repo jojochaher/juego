@@ -14,6 +14,8 @@ const sala = {
   borradas: new Set(),
   gente: new Map(),                // id -> persona
   timer: null, ultimoEnvio: 0, ultimoEstado: '',
+  chau: Promise.resolve(),         // el último "me fui" en viaje: hay que esperarlo antes de volver a avisar que estoy
+  ultimoEvento: 0,                 // cuándo llegó algo por las conexiones en vivo (para detectar si se murieron)
 };
 
 // quién soy y de qué color (se guarda en el celu)
@@ -45,12 +47,15 @@ async function salaEntrarConPass(pass) {
 }
 
 async function salaEntrar(hash) {
-  if (sala.active) salaCerrarConexiones();
+  if (sala.active) { salaChau(); salaCerrarConexiones(); }
   if (held) releaseHold();
   clearWorks();
   sala.active = true; sala.hash = hash;
   sala.borradas.clear(); sala.gente.clear(); sala.cargando.clear();
+  sala.ultimoEstado = '';
   try { localStorage.setItem('sala', hash); } catch (e) {}
+  await sala.chau;                 // si recién saliste, que el "me fui" llegue antes que el "volví"
+  if (!sala.active || sala.hash !== hash) return;
   salaAbrirConexiones();
   rtcStart();
   showHint('entraste a la sala · lo que hagas acá lo ven todos los que tengan la contraseña');
@@ -59,8 +64,8 @@ async function salaEntrar(hash) {
 
 function salaSalir() {
   if (!sala.active) return;
+  salaChau();
   salaCerrarConexiones();
-  salaApi('gente/' + salaYo, 'DELETE', undefined, { keepalive: true }).catch(() => {});
   if (held) releaseHold();
   sala.active = false; sala.hash = null; sala.gente.clear();
   try { localStorage.removeItem('sala'); } catch (e) {}
@@ -71,27 +76,47 @@ function salaSalir() {
 }
 
 function salaAbrirConexiones() {
+  sala.ultimoEvento = Date.now();
+  const vivo = () => { sala.ultimoEvento = Date.now(); };
   sala.esObras = new EventSource(salaUrl('poses'));
-  const onObras = e => { try { const m = JSON.parse(e.data); salaCambioObras(m.path, m.data, e.type); } catch (err) {} };
+  sala.esObras.addEventListener('keep-alive', vivo);
+  sala.esObras.addEventListener('open', vivo);
+  const onObras = e => { vivo(); try { const m = JSON.parse(e.data); salaCambioObras(m.path, m.data, e.type); } catch (err) {} };
   sala.esObras.addEventListener('put', onObras);
   sala.esObras.addEventListener('patch', onObras);
   sala.esObras.addEventListener('cancel', () => showHint('la sala no acepta la conexión'));
 
   sala.esGente = new EventSource(salaUrl('gente'));
-  const onGente = e => { try { const m = JSON.parse(e.data); salaCambioGente(m.path, m.data, e.type); } catch (err) {} };
+  sala.esGente.addEventListener('keep-alive', vivo);
+  const onGente = e => { vivo(); try { const m = JSON.parse(e.data); salaCambioGente(m.path, m.data, e.type); } catch (err) {} };
   sala.esGente.addEventListener('put', onGente);
   sala.esGente.addEventListener('patch', onGente);
 
   sala.timer = setInterval(salaEnviarPresencia, 200);
 }
 
-function salaCerrarConexiones() {
-  rtcStop();
+function salaCerrarConexiones(dejarRtc) {
+  if (!dejarRtc) rtcStop();
   if (sala.esObras) sala.esObras.close();
   if (sala.esGente) sala.esGente.close();
   sala.esObras = sala.esGente = null;
   clearInterval(sala.timer);
 }
+
+// el iPhone corta las conexiones en vivo cuando la app pasa al fondo, sin avisar.
+// al volver (o si hace rato que no llega nada) se reabre todo: la sala manda el estado completo de nuevo.
+async function salaReconectar() {
+  if (!sala.active) return;
+  salaCerrarConexiones();
+  sala.ultimoEstado = '';
+  await sala.chau;
+  if (!sala.active) return;
+  salaAbrirConexiones();
+  rtcStart();
+}
+setInterval(() => {
+  if (sala.active && !document.hidden && sala.esGente && Date.now() - sala.ultimoEvento > 70000) salaReconectar();
+}, 10000);
 
 // ---------- obras compartidas ----------
 const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv'];
@@ -217,9 +242,13 @@ function salaPersona(id, d) {
 }
 
 // al cerrar o mandar la app al fondo, avisar que me fui
-function salaChau() { if (sala.active) salaApi('gente/' + salaYo, 'DELETE', undefined, { keepalive: true }).catch(() => {}); sala.ultimoEstado = ''; }
+function salaChau() {
+  if (sala.active && sala.hash) sala.chau = salaApi('gente/' + salaYo, 'DELETE', undefined, { keepalive: true }).catch(() => {});
+  sala.ultimoEstado = '';
+}
 window.addEventListener('pagehide', salaChau);
-document.addEventListener('visibilitychange', () => { if (document.hidden) salaChau(); });
+window.addEventListener('pageshow', e => { if (e.persisted) salaReconectar(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) salaChau(); else salaReconectar(); });
 
 // ---------- dibujar a los demás: personaje palito ----------
 let salaDiscTex = null;
@@ -355,6 +384,11 @@ salaBtn.addEventListener('click', () => {
 document.getElementById('salaEntrar').addEventListener('click', async () => {
   await salaEntrarConPass(salaPass.value);
   if (sala.active) { salaPass.value = ''; salaPass.blur(); salaPanel.style.display = 'none'; }
+});
+document.getElementById('salaVer').addEventListener('click', () => {
+  const ver = salaPass.type === 'password';
+  salaPass.type = ver ? 'text' : 'password';
+  document.getElementById('salaVer').textContent = ver ? 'ocultar' : 'ver';
 });
 salaPass.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('salaEntrar').click(); });
 document.getElementById('salaSalir').addEventListener('click', () => { salaSalir(); salaPanel.style.display = 'none'; });
