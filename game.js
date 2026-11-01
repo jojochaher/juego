@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10';
+const VERSION = 'v10.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -334,57 +334,83 @@ function fisica(dt) {
 // ---------- grilla: alinear lo que está en la mano ----------
 // de pie (o acostada si está casi horizontal), mirando en pasos de 45°, girada en pasos de 90°,
 // ancho en pasos de 10 cm y la esquina en la grilla de 10 cm (así los bordes se alinean entre fotos)
-const SNAP = 0.1, SNAP_YAW = Math.PI / 4;
+const SNAP = 0.1, SNAP_YAW = Math.PI / 2;
 let grilla = false;
 try { grilla = localStorage.getItem('grilla') === '1'; } catch (e) {}
 const snapA = (a, k) => Math.round(a / k) * k;
+// grilla: de pie (o acostada si está casi horizontal), mirando en pasos de 90°, girada en pasos de 90°,
+// ancho en pasos de 10 cm, y la esquina de abajo a la izquierda en metros enteros en el piso (x, z: los puntitos)
+// y de a 10 cm en altura (si la altura también fuera de a metro, las fotos quedarían en el piso o a 1 m).
+// Una foto de pie queda sobre una línea de puntitos, con su borde izquierdo arriba de un puntito.
 function snapPose(p) {
   const up = [0, 1, 0];
   let n = norm(cross(p.r, p.u)), u;
   if (Math.abs(n[1]) > 0.7) {                       // acostada (piso o techo)
     n = [0, n[1] > 0 ? 1 : -1, 0];
     const a = snapA(Math.atan2(p.u[0], p.u[2]), SNAP_YAW);
-    u = [Math.sin(a), 0, Math.cos(a)];
+    u = [Math.round(Math.sin(a)), 0, Math.round(Math.cos(a))];
   } else {                                           // de pie
     const a = snapA(Math.atan2(n[0], n[2]), SNAP_YAW);
-    n = [Math.sin(a), 0, Math.cos(a)];
+    n = [Math.round(Math.sin(a)), 0, Math.round(Math.cos(a))];
     const r0 = cross(up, n);
     const t = snapA(Math.atan2(dot(p.u, r0), dot(p.u, up)), Math.PI / 2);
     u = add(mul(up, Math.round(Math.cos(t))), mul(r0, Math.round(Math.sin(t))));
   }
   const r = cross(u, n);                             // así cross(r, u) = n (el lado de adelante no cambia)
   const w = Math.max(SNAP, snapA(p.w, SNAP)), h = p.h * w / p.w;
-  const corner = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2)).map(v => Math.round(snapA(v, SNAP) * 1000) / 1000);
+  const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
+  const corner = [Math.round(c0[0]), Math.round(snapA(c0[1], SNAP) * 1000) / 1000, Math.round(c0[2])];
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
 }
-// guías: la grilla de 10 cm dibujada en el plano de lo que tenés en la mano, que se desvanece lejos de la foto
-// (líneas cada 50 cm más marcadas). Así se ve dónde va a caer y contra qué se alinea.
-const GUIA_MARGEN = 0.45;
+// guías: muestran contra qué se alinea lo que tenés en la mano.
+// - la línea de puntitos del piso sobre la que queda (de color, hasta 3 m a cada lado)
+// - líneas que bajan de las esquinas de abajo hasta el piso (la izquierda cae justo en un puntito)
+// - en el plano de la foto, una línea vertical por cada metro entero (las otras columnas de puntitos)
+// Si está acostada: las líneas del piso por debajo de sus bordes y las que bajan desde sus esquinas.
 function guiasGrilla(p, col) {
   const d = Math.max(0.2, len(sub(p.c, pos)));
-  const grosor = metersPerPx(d) * 1.4;
-  let n = norm(cross(p.r, p.u));
-  if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);
-  const atras = mul(n, 0.003 * d);                         // apenas detrás de la foto: la foto tapa sus líneas
-  const esquina = add(sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2)), atras);
+  const grosor = px => metersPerPx(d) * px;
+  const up = [0, 1, 0];
+  const n = norm(cross(p.r, p.u));
+  const esquina = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
-  const linea = (eje, otro, t, largo, desde, alfa) => {   // línea paralela a "otro", a distancia t sobre "eje"
-    const centro = add(add(esquina, mul(eje, t)), mul(otro, desde + largo / 2));
-    const [w, h] = eje === p.r ? [grosor, largo] : [largo, grosor];
-    drawQuad(scratch, quadData(centro, p.r, p.u, w, h), white, col, alfa);
+  const segmento = (a, b, ancho, alfa, color = col) => {   // línea de a a b, de frente a la cámara
+    const dir = sub(b, a), largo = len(dir);
+    if (largo < 1e-4) return;
+    const t = mul(dir, 1 / largo);
+    let lado = cross(t, sub(add(a, mul(dir, 0.5)), pos));
+    if (len(lado) < 1e-6) lado = cross(t, up);
+    drawQuad(scratch, quadData(add(a, mul(dir, 0.5)), norm(lado), t, ancho, largo), white, color, alfa);
   };
-  const cada = Math.max(p.w, p.h) > 1.5 ? 5 : 1;   // foto grande: solo las líneas de 50 cm (si no, son cientos por cuadro)
-  const tramos = (tam) => { const a = []; for (let k = -Math.round(GUIA_MARGEN / SNAP); k <= Math.round((tam + GUIA_MARGEN) / SNAP); k++) if (k % cada === 0) a.push(k); return a; };
-  for (const [eje, otro, tam, tamOtro] of [[p.r, p.u, p.w, p.h], [p.u, p.r, p.h, p.w]]) {
-    for (const k of tramos(tam)) {
-      const t = k * SNAP;
-      const fuera = t < 0 ? -t : t > tam ? t - tam : 0;      // cuánto se aleja de la foto
-      if (fuera > GUIA_MARGEN) continue;
-      const mayor = Math.round(t / SNAP) % 5 === 0;
-      const alfa = (mayor ? 0.38 : 0.16) * (1 - fuera / GUIA_MARGEN);
-      const extra = GUIA_MARGEN - fuera;                      // las líneas lejanas son más cortas
-      linea(eje, otro, t, tamOtro + 2 * extra, -extra, alfa);
+  const piso = q => [q[0], 0.003, q[2]];
+  const horiz = Math.abs(n[1]) > 0.7;
+  // esquinas de abajo (la de la izquierda es la que va a los puntitos) y el eje horizontal de la foto
+  const ejeH = Math.abs(p.r[1]) < 0.5 ? p.r : p.u;
+  const tamH = ejeH === p.r ? p.w : p.h;
+  const esqs = horiz
+    ? [esquina, add(esquina, mul(p.r, p.w)), add(esquina, mul(p.u, p.h)), add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h))]
+    : [esquina, add(esquina, mul(ejeH, tamH))];
+  // bajadas al piso
+  for (const [k, q] of esqs.entries()) segmento(piso(q), q, grosor(k === 0 ? 2.2 : 1.4), k === 0 ? 0.85 : 0.5);
+  if (!horiz) {
+    // la línea de puntitos donde se apoya la pared
+    const a = piso(sub(esquina, mul(ejeH, 3))), b = piso(add(esquina, mul(ejeH, tamH + 3)));
+    segmento(a, b, grosor(2.2), 0.7);
+    // columnas de metros enteros en el plano de la foto, cerca
+    const alto = Math.max(2.4, esquina[1] + p.h + 0.4);
+    for (let k = -2; k <= Math.ceil(tamH) + 2; k++) {
+      const base = piso(add(esquina, mul(ejeH, k)));
+      const fuera = k < 0 ? -k : Math.max(0, k - tamH);
+      segmento(base, add(base, [0, alto, 0]), grosor(1.2), k === 0 ? 0 : 0.22 * (1 - fuera / 3));
+    }
+  } else {
+    // las dos líneas del piso que pasan por los bordes de la foto
+    for (const [eje, tam, otro, tamO] of [[p.r, p.w, p.u, p.h], [p.u, p.h, p.r, p.w]]) {
+      for (const off of [0, tamO]) {
+        const a = piso(add(sub(esquina, mul(eje, 2)), mul(otro, off))), b = piso(add(add(esquina, mul(eje, tam + 2)), mul(otro, off)));
+        segmento(a, b, grosor(1.6), off === 0 ? 0.6 : 0.35);
+      }
     }
   }
   gl.depthMask(true);
@@ -695,7 +721,7 @@ grillaBtn.addEventListener('click', () => {
   grilla = !grilla;
   try { localStorage.setItem('grilla', grilla ? '1' : '0'); } catch (e) {}
   paintGrilla(); buzz(8);
-  if (grilla) showHint('alineada: de pie, en pasos de 45° y 10 cm');
+  if (grilla) showHint('alineada a los puntitos del piso: en pasos de 90° y de a metro');
 });
 paintGrilla();
 
@@ -1134,24 +1160,6 @@ function escena(b, dt, yo) {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   const m = matrix(b);
 
-  // piso de puntos
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.disable(gl.DEPTH_TEST);
-  gl.useProgram(dotProg);
-  const gx = Math.round(pos[0]), gz = Math.round(pos[2]);
-  let i = 0;
-  for (let x = -GRID; x <= GRID; x++) for (let z = -GRID; z <= GRID; z++) {
-    dotData[i++] = gx + x; dotData[i++] = 0; dotData[i++] = gz + z;
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, dotBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, dotData, gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(DP.p); gl.vertexAttribPointer(DP.p, 3, gl.FLOAT, false, 0, 0);
-  gl.uniformMatrix4fv(DP.m, false, m);
-  gl.uniform3fv(DP.eye, pos);
-  gl.drawArrays(gl.POINTS, 0, dotData.length / 3);
-  gl.disableVertexAttribArray(DP.p);
-  gl.disable(gl.BLEND);
-
   // obras
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
   gl.useProgram(quadProg);
@@ -1184,6 +1192,25 @@ function escena(b, dt, yo) {
     gl.disable(gl.BLEND);
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
+
+  // piso de puntos: al final y con profundidad, así una foto los tapa solo si está adelante
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(dotProg);
+  const gx = Math.round(pos[0]), gz = Math.round(pos[2]);
+  let i = 0;
+  for (let x = -GRID; x <= GRID; x++) for (let z = -GRID; z <= GRID; z++) {
+    dotData[i++] = gx + x; dotData[i++] = 0; dotData[i++] = gz + z;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, dotBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, dotData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(DP.p); gl.vertexAttribPointer(DP.p, 3, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(DP.m, false, m);
+  gl.uniform3fv(DP.eye, pos);
+  gl.drawArrays(gl.POINTS, 0, dotData.length / 3);
+  gl.disableVertexAttribArray(DP.p);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
 }
 
 // ---------- auto-actualización ----------
