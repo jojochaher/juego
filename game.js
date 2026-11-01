@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v9.1';
+const VERSION = 'v9.2';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -235,10 +235,21 @@ function setBuf(w) {
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
   gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.uv), gl.STATIC_DRAW);
 }
+// una foto con números rotos (NaN, ejes en cero) no puede tocar la física: si no, te deja en NaN y no se ve nada
+const finito3 = v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+function poseRota(o) {
+  if (!finito3(o.c) || !finito3(o.r) || !finito3(o.u)) return 'ejes';
+  if (!(o.w > 0) || !(o.h > 0) || !Number.isFinite(o.w) || !Number.isFinite(o.h)) return 'tamaño ' + o.w + 'x' + o.h;
+  if (len(o.r) < 1e-3 || len(o.u) < 1e-3 || len(cross(o.r, o.u)) < 1e-3) return 'ejes en cero o paralelos';
+  return null;
+}
 function addWork(o, img) {
+  const rota = poseRota(o);
+  if (rota) diag(`foto rota ${String(o.id).slice(-6)}: ${rota} → no choca`);
+  else { o = { ...o, r: norm(o.r), u: norm(o.u) }; }
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: ih / iw,
-              tex: texture(small(img)), buf: gl.createBuffer() };
+              tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota };
   setBuf(w);
   works.push(w);
   return w;
@@ -271,10 +282,15 @@ const CUERPO = 0.22, ESCALON = 0.4, GRAVEDAD = 9.8;
 let velY = 0;
 function solidas() {
   const otros = salaEnManos();
-  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id));
+  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id) && !w.rota);
 }
 const normal = w => norm(cross(w.r, w.u));
+let posBuena = [0, EYE, 0];
 function fisica(dt) {
+  if (!pos.every(Number.isFinite)) {
+    diagUna('pos rota ' + pos.join(',') + ' → vuelvo a la última buena');
+    pos[0] = posBuena[0]; pos[1] = posBuena[1]; pos[2] = posBuena[2]; velY = 0;
+  }
   const ws = solidas();
   let pies = pos[1] - EYE;
   // paredes: esferas apiladas de las rodillas a la cabeza; cada una se empuja afuera de cada foto, en horizontal
@@ -292,7 +308,9 @@ function fisica(dt) {
         let e = sub(q, cp); e[1] = 0;
         if (len(e) < 1e-4) { e = [n[0], 0, n[2]]; if (dot(e, d) < 0) e = mul(e, -1); }
         e = norm(e);
-        pos[0] += e[0] * (CUERPO - dist); pos[2] += e[2] * (CUERPO - dist);
+        const px = pos[0] + e[0] * (CUERPO - dist), pz = pos[2] + e[2] * (CUERPO - dist);
+        if (!Number.isFinite(px) || !Number.isFinite(pz)) { w.rota = true; diag(`foto ${String(w.id).slice(-6)} rompía la física → no choca`); continue; }
+        pos[0] = px; pos[2] = pz;
       }
     }
   }
@@ -309,6 +327,7 @@ function fisica(dt) {
   if (pies <= suelo + 0.001) { pies = suelo; velY = 0; }            // parado (o subió un escalón)
   else { velY -= GRAVEDAD * dt; pies = Math.max(suelo, pies + velY * dt); if (pies === suelo) velY = 0; }
   pos[1] = pies + EYE;
+  if (pos.every(Number.isFinite)) posBuena = pos.slice();
 }
 
 // ---------- grilla: alinear lo que está en la mano ----------
@@ -921,13 +940,18 @@ startEl.addEventListener('click', async () => {
 // ---------- loop ----------
 let last = performance.now();
 let ultimoCuadro = 0, cuadros = 0;
+function estadoTxt() {
+  const f = basis().f;
+  return `pos ${pos.map(v => v.toFixed(2))} mira ${f.map(v => v.toFixed(2))} fotos ${works.length} (rotas ${works.filter(w => w.rota).length}) fov ${fovDeg} cam ${camOn ? 1 : 0}`;
+}
 setInterval(() => {
   if (document.hidden || !started) return;
   if (performance.now() - ultimoCuadro > 3000) diagUna('no se dibuja hace ' + Math.round((performance.now() - ultimoCuadro) / 1000) + ' s' + (gl.isContextLost() ? ' (webgl perdido)' : ''));
 }, 3000);
 function frame(now) {
   ultimoCuadro = performance.now();
-  if (++cuadros === 60) diag('dibujando ok');
+  if (++cuadros === 60) diag('dibujando ok · ' + estadoTxt());
+  if (!Number.isFinite(yawOff) || !Number.isFinite(pitchOff)) { diagUna('mirada rota → la reseteo'); yawOff = 0; pitchOff = 0; }
   if (!gl.isContextLost()) {
     try { draw(now); pantallaOk(now); } catch (e) { showHint('error: ' + e.message); diagUna('ERROR dibujando: ' + e.message + ' ' + ((e.stack || '').split('\n')[1] || '').trim()); }
   }
@@ -946,6 +970,7 @@ canvas.addEventListener('webglcontextlost', e => {
   e.preventDefault(); diag('webgl: se perdió el contexto');
   setTimeout(() => { if (gl.isContextLost() && !document.hidden) recargarSeguro('webgl no volvió'); }, 2500);
 });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && started) diag('estado · ' + estadoTxt()); });
 canvas.addEventListener('webglcontextrestored', () => recargarSeguro('webgl volvió (las texturas se perdieron)'));
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && gl.isContextLost()) setTimeout(() => { if (gl.isContextLost()) recargarSeguro('webgl perdido al volver'); }, 1500);
@@ -964,7 +989,17 @@ function pantallaOk(now) {
   const pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]], vals = [];
   for (const [x, y] of pts) { gl.readPixels(Math.floor(canvas.width * x), Math.floor(canvas.height * y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pantallaPx); vals.push(pantallaPx.join(',')); }
   const lum = pantallaPx[0] + pantallaPx[1] + pantallaPx[2];
-  if (vals.every(v => v === vals[0]) && lum > 90) diagUna(`pantalla pareja rgb(${vals[0]}) pos ${pos.map(v => v.toFixed(1))} gente ${sala.gente.size}`);
+  if (vals.every(v => v === vals[0]) && lum > 90) diagUna(`pantalla pareja rgb(${vals[0]}) · ${estadoTxt()}`);
+  // ¿se ven los puntos del piso? (mirando más o menos al frente siempre tienen que verse en la mitad de abajo)
+  if (started && !pjVista && basis().f[1] < 0.2) {
+    const w = canvas.width, h = canvas.height, fila = new Uint8Array(w * 4);
+    let claros = 0;
+    for (let y = Math.floor(h * 0.05); y < h * 0.45 && !claros; y += Math.max(3, Math.floor(h / 120))) {
+      gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, fila);
+      for (let i = 0; i < fila.length; i += 4) if (fila[i] > 45 || fila[i + 1] > 45 || fila[i + 2] > 45) { claros++; break; }
+    }
+    if (!claros) diagUna('no se ve el piso · ' + estadoTxt());
+  }
 }
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);

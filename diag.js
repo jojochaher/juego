@@ -38,7 +38,9 @@ diag('abrió · ' + (navigator.standalone || matchMedia('(display-mode: standalo
 let diagToques = [];
 function diagAbrir() {
   const p = document.getElementById('diag');
-  document.getElementById('diagTxt').value = diagLog.slice().reverse().join('\n');
+  let ahora = '';
+  try { ahora = 'AHORA · ' + estadoTxt() + '\n'; } catch (e) {}
+  document.getElementById('diagTxt').value = ahora + diagLog.slice().reverse().join('\n');
   p.style.display = '';
 }
 document.addEventListener('DOMContentLoaded', () => {
