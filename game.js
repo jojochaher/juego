@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v5.2';
+const VERSION = 'v6';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -120,7 +120,7 @@ const quadProg = program(`
 attribute vec3 p; attribute vec2 uv; uniform mat4 m; varying vec2 v;
 void main() { v = uv; gl_Position = m * vec4(p, 1.0); }`, `
 precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; varying vec2 v;
-void main() { gl_FragColor = vec4(texture2D(t, v).rgb * tint, alpha); }`);
+void main() { vec4 c = texture2D(t, v); if (c.a < 0.5) discard; gl_FragColor = vec4(c.rgb * tint, alpha); }`);
 const Q = {
   p: gl.getAttribLocation(quadProg, 'p'), uv: gl.getAttribLocation(quadProg, 'uv'),
   m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'), alpha: gl.getUniformLocation(quadProg, 'alpha'),
@@ -361,6 +361,11 @@ function stepAim(dt) {
   if ((Math.abs(eh) < 0.002 && Math.abs(ee) < 0.002) || a.t > 0.9) finishAim();
 }
 function releaseHold() { held = null; setMode('mover'); ui(); }
+function clearWorks() {
+  held = null;
+  for (const w of works) { gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
+  works.length = 0;
+}
 
 function drop() {
   if (!held) return;
@@ -369,7 +374,8 @@ function drop() {
   Object.assign(w, worldPose(basis(), held.L));
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
-  store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
+  if (sala.active) salaSavePose(w);
+  else store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
   buzz(12);
   releaseHold();
 }
@@ -379,7 +385,8 @@ function trash() {
   const w = held.work;
   works.splice(works.indexOf(w), 1);
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
-  store('readwrite', s => s.delete(w.id)).catch(() => {});
+  if (sala.active) salaRemove(w);
+  else store('readwrite', s => s.delete(w.id)).catch(() => {});
   buzz(20);
   releaseHold();
 }
@@ -430,7 +437,7 @@ async function loadWorks() {
     if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
     const img = new Image(); img.src = url;
-    try { await img.decode(); addWork(o, img); } catch (e) {}
+    try { await img.decode(); if (!sala.active) addWork(o, img); } catch (e) {}
     img.src = ''; URL.revokeObjectURL(url);
     await new Promise(r => setTimeout(r, 0));
   }
@@ -480,7 +487,8 @@ function shoot() {
   c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose };
   addWork(o, c);
-  c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
+  if (sala.active) salaShoot(o, c);
+  else c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
@@ -518,6 +526,7 @@ function ui() {
   show(joyEl, started);
   show(invEl, started);
   show(homeBtn, started);
+  show($('salaBtn'), started);
   show($('fov'), started);
   show(gyroBtn, started && gyroMode);
   show(distEl, canEdit);
@@ -799,6 +808,7 @@ function draw(now) {
   gl.useProgram(quadProg);
   gl.uniformMatrix4fv(Q.m, false, m);
   for (const w of works) if (!held || w !== held.work) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  salaDraw(b, dt);
 
   // en la mano
   if (held) {
@@ -838,12 +848,13 @@ setInterval(checkUpdate, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
 
 ui();
-loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
+const salaPrevia = salaGuardada();
+(salaPrevia ? salaEntrar(salaPrevia) : loadWorks()).catch(() => {}).finally(() => requestAnimationFrame(frame));
 
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
   pos, works, joy,
-  get held() { return held; }, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
+  get held() { return held; }, sala, salaYo, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },

@@ -1,0 +1,14 @@
+{
+  "rules": {
+    "salas": {
+      "$sala": {
+        ".read": "$sala.length === 64",
+        ".write": "$sala.length === 64",
+        "poses": { "$id": { ".validate": "newData.hasChildren(['c', 'r', 'u', 'w', 'h'])" } },
+        "imgs": { "$id": { ".validate": "newData.isString() && newData.val().length < 400000" } },
+        "gente": { "$id": { ".validate": "newData.hasChildren(['p', 't'])" } },
+        "$otro": { ".validate": false }
+      }
+    }
+  }
+}
