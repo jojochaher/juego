@@ -93,6 +93,22 @@
   }
   .pill.on { background: rgba(255,120,80,0.85); color: #fff; }
   .pill:active { background: rgba(255,255,255,0.25); }
+  #equip, #unequip { display: flex; align-items: center; justify-content: center; border-radius: 50%; }
+  #equip {
+    right: 26px; bottom: calc(46px + env(safe-area-inset-bottom));
+    width: 72px; height: 72px; background: rgba(255,255,255,0.12); border: 1.5px solid rgba(255,255,255,0.3); box-sizing: border-box;
+  }
+  #unequip {
+    right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
+    width: 48px; height: 48px; background: rgba(255,255,255,0.12);
+  }
+  #fovPanel {
+    position: fixed; left: 16px; right: 66px; top: 46%; height: 64px; z-index: 4;
+    background: rgba(20,20,26,0.85); border-radius: 32px; touch-action: none;
+  }
+  #fovTrack { position: absolute; left: 34px; right: 74px; top: 30px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.25); }
+  #fovKnob { position: absolute; top: -12px; width: 28px; height: 28px; margin-left: -14px; border-radius: 14px; background: #fff; pointer-events: none; }
+  #fovVal { position: absolute; right: 18px; top: 22px; font-size: 15px; color: rgba(255,255,255,0.85); pointer-events: none; }
   #modes {
     position: fixed; left: 0; right: 0; bottom: calc(176px + env(safe-area-inset-bottom));
     display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
@@ -130,6 +146,9 @@
   <div class="pill" data-m="girar">girar</div>
   <div class="pill" id="reset" aria-label="restablecer">↺</div>
 </div>
+<div id="equip" class="ctl" style="display:none" aria-label="equipar cámara"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
+<div id="unequip" class="ctl" style="display:none" aria-label="guardar cámara"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/><path d="M3 3l18 18" stroke-linecap="round"/></svg></div>
+<div id="fovPanel" style="display:none"><div id="fovTrack"><div id="fovKnob"></div></div><span id="fovVal"></span></div>
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>

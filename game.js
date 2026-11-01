@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v5.1';
+const VERSION = 'v5.2';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -19,9 +19,9 @@ window.addEventListener('unhandledrejection', e => showHint('error: ' + (e.reaso
 
 // --- unidades: metros. x derecha, y arriba, arrancás mirando -z ---
 const EYE = 1.6;
-const FOV_STEPS = [35, 50, 65, 80, 100];   // campo horizontal en grados (botón fov)
+const FOV_MIN = 5, FOV_MAX = 170;          // campo horizontal en grados (menú fov)
 let fovDeg = 50;
-try { const f = +localStorage.getItem('fov'); if (FOV_STEPS.includes(f)) fovDeg = f; } catch (e) {}
+try { const f = +localStorage.getItem('fov'); if (f >= FOV_MIN && f <= FOV_MAX) fovDeg = f; } catch (e) {}
 let FOVX = fovDeg * Math.PI / 180;
 const MOVE = 1.6;                 // m/s con el joystick a fondo
 const LOOK = 0.0045;              // radianes por px de arrastre
@@ -436,24 +436,43 @@ async function loadWorks() {
   }
 }
 
-// ---------- cámara ----------
-let camReady = false;
+// ---------- cámara (un ítem que se equipa y se guarda) ----------
+let camReady = false, camOn = true, camStarting = false;
+try { camOn = localStorage.getItem('camara') !== '0'; } catch (e) {}
 async function startCamera() {
+  if (camReady || camStarting) return;
+  camStarting = true;
   try {
     const s = await navigator.mediaDevices.getUserMedia({
       audio: false, video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 960 } },
     });
+    if (!camOn) { s.getTracks().forEach(t => t.stop()); return; }   // la guardaste mientras abría
     video.srcObject = s;
     await video.play();
     camReady = true;
   } catch (e) {
     showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
+  } finally {
+    camStarting = false;
+    ui();
   }
+}
+function stopCamera() {
+  const s = video.srcObject;
+  if (s) s.getTracks().forEach(t => t.stop());   // apaga la cámara de verdad (batería y el puntito verde)
+  video.srcObject = null;
+  camReady = false;
+}
+function setCam(on) {
+  camOn = on;
+  try { localStorage.setItem('camara', on ? '1' : '0'); } catch (e) {}
+  if (on) startCamera(); else { stopCamera(); if (!held) setMode('mover'); }
+  buzz(10);
   ui();
 }
 
 function shoot() {
-  if (!camReady || !video.videoWidth || held) return;
+  if (!camOn || !camReady || !video.videoWidth || held) return;
   const pose = worldPose(basis(), preview);
   const k = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
   const c = document.createElement('canvas');
@@ -495,7 +514,7 @@ resetBtn.addEventListener('click', resetHeld);
 let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
-  const holding = !!held, canEdit = started && (holding || camReady);
+  const holding = !!held, camUp = camOn && camReady, canEdit = started && (holding || camUp);
   show(joyEl, started);
   show(invEl, started);
   show(homeBtn, started);
@@ -503,7 +522,9 @@ function ui() {
   show(gyroBtn, started && gyroMode);
   show(distEl, canEdit);
   show(modesEl, canEdit);
-  show(shootBtn, started && camReady && !holding);
+  show(shootBtn, started && camUp && !holding);
+  show(equipBtn, started && !camOn && !holding);
+  show(unequipBtn, started && camOn && !holding);
   show(dropBtn, started && holding);
   show(trashBtn, started && holding);
   show(cancelBtn, started && holding);
@@ -527,15 +548,38 @@ invEl.addEventListener('click', () => {
 paintInv();
 
 // ---------- campo de visión ----------
-const fovBtn = $('fov');
-function paintFov() { fovBtn.textContent = 'fov ' + fovDeg + '°'; }
-fovBtn.addEventListener('click', () => {
-  fovDeg = FOV_STEPS[(FOV_STEPS.indexOf(fovDeg) + 1) % FOV_STEPS.length];
+const fovBtn = $('fov'), fovPanel = $('fovPanel'), fovTrack = $('fovTrack'), fovKnob = $('fovKnob'), fovVal = $('fovVal');
+function paintFov() {
+  fovBtn.textContent = 'fov';
+  fovVal.textContent = fovDeg + '°';
+  fovKnob.style.left = (fovDeg - FOV_MIN) / (FOV_MAX - FOV_MIN) * 100 + '%';
+}
+function setFov(d) {
+  fovDeg = Math.round(clamp(d, FOV_MIN, FOV_MAX));
   FOVX = fovDeg * Math.PI / 180;
   try { localStorage.setItem('fov', String(fovDeg)); } catch (e) {}
   paintFov();
+}
+fovBtn.addEventListener('click', () => {
+  const open = fovPanel.style.display === 'none';
+  fovPanel.style.display = open ? '' : 'none';
+  fovBtn.classList.toggle('on', open);
 });
+function fovFromX(x) {
+  const r = fovTrack.getBoundingClientRect();
+  setFov(FOV_MIN + clamp((x - r.left) / r.width, 0, 1) * (FOV_MAX - FOV_MIN));
+}
+let fovPtr = null;
+fovPanel.addEventListener('pointerdown', e => { fovPtr = e.pointerId; fovPanel.setPointerCapture(e.pointerId); fovFromX(e.clientX); });
+fovPanel.addEventListener('pointermove', e => { if (e.pointerId === fovPtr) fovFromX(e.clientX); });
+fovPanel.addEventListener('pointerup', e => { if (e.pointerId === fovPtr) fovPtr = null; });
+fovPanel.addEventListener('pointercancel', e => { if (e.pointerId === fovPtr) fovPtr = null; });
 paintFov();
+
+// ---------- equipar / guardar la cámara ----------
+const equipBtn = $('equip'), unequipBtn = $('unequip');
+equipBtn.addEventListener('click', () => setCam(true));
+unequipBtn.addEventListener('click', () => setCam(false));
 
 // ---------- volver al inicio ----------
 homeBtn.addEventListener('click', () => {
@@ -690,16 +734,14 @@ canvas.addEventListener('pointercancel', endTouch);
 startEl.addEventListener('click', async () => {
   if (started) return;
   started = true;
-  let perm = Promise.resolve();
+  // un permiso por vez: primero movimiento; cuando se cierra ese, la cámara (si está equipada)
   if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
-    perm = DeviceOrientationEvent.requestPermission().catch(() => {});
+    await DeviceOrientationEvent.requestPermission().catch(() => {});
   }
-  const camP = startCamera();
-  await perm;
   startEl.remove();
   setMode('mover');
   ui();
-  await camP;
+  if (camOn) await startCamera();
   showHint('joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla');
 });
 
@@ -761,7 +803,7 @@ function draw(now) {
   // en la mano
   if (held) {
     drawFramed(held.aim ? held.work : worldPose(b, held.L), held.work.tex, [1, 1, 1]);
-  } else if (camReady && video.readyState >= 2) {
+  } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
     drawFramed(worldPose(b, preview), videoTex, [1, 0.47, 0.31]);
@@ -801,7 +843,7 @@ loadWorks().catch(() => {}).finally(() => requestAnimationFrame(frame));
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
   pos, works, joy,
-  get held() { return held; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
+  get held() { return held; }, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
