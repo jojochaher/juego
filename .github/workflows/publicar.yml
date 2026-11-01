@@ -1,7 +1,8 @@
 # Publica el juego en GitHub Pages.
 # - Solo cuando cambian archivos del juego (no por notas ni pruebas).
 # - Una publicación a la vez (las demás esperan su turno).
-# - Si GitHub tiene una publicación anterior trabada ("in progress deployment"), espera y reintenta solo.
+# - Si GitHub tiene una publicación anterior trabada ("in progress deployment"), espera y reintenta solo
+#   (a los 5, 15, 30, 60 y 105 minutos). Solo falla (y manda mail) si después de todo eso sigue trabado.
 name: publicar
 
 on:
@@ -40,14 +41,32 @@ jobs:
       - id: intento1
         uses: actions/deploy-pages@v4
         continue-on-error: true
-      - if: steps.intento1.outcome == 'failure'
-        run: echo "algo trabado en GitHub, espero 5 min" && sleep 300
+      - if: steps.intento1.outcome != 'success'
+        run: echo "GitHub tiene algo trabado; espero 5 min y reintento" && sleep 300
       - id: intento2
-        if: steps.intento1.outcome == 'failure'
+        if: steps.intento1.outcome != 'success'
         uses: actions/deploy-pages@v4
         continue-on-error: true
-      - if: steps.intento1.outcome == 'failure' && steps.intento2.outcome == 'failure'
-        run: echo "sigue trabado, espero 15 min" && sleep 900
+      - if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success'
+        run: echo "GitHub tiene algo trabado; espero 10 min y reintento" && sleep 600
       - id: intento3
-        if: steps.intento1.outcome == 'failure' && steps.intento2.outcome == 'failure'
+        if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success'
+        run: echo "GitHub tiene algo trabado; espero 15 min y reintento" && sleep 900
+      - id: intento4
+        if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success' && steps.intento4.outcome != 'success'
+        run: echo "GitHub tiene algo trabado; espero 30 min y reintento" && sleep 1800
+      - id: intento5
+        if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success' && steps.intento4.outcome != 'success'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success' && steps.intento4.outcome != 'success' && steps.intento5.outcome != 'success'
+        run: echo "GitHub tiene algo trabado; espero 45 min y reintento" && sleep 2700
+      - id: intento6
+        if: steps.intento1.outcome != 'success' && steps.intento2.outcome != 'success' && steps.intento3.outcome != 'success' && steps.intento4.outcome != 'success' && steps.intento5.outcome != 'success'
         uses: actions/deploy-pages@v4
