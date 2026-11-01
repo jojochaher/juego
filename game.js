@@ -1,10 +1,10 @@
-// juego — v5: museo en el vacío, con edición de fotos
+// juego — museo en el vacío con fotos (ver claude/instrucciones.md del proyecto para el estado)
 // Mirás con el giroscopio y ajustás arrastrando con el dedo. Te movés con el joystick.
 // Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste) viaja pegado
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v8';
+const VERSION = 'v9';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -14,6 +14,7 @@ const shootBtn = $('shoot'), dropBtn = $('drop'), trashBtn = $('trash'), cancelB
 const homeBtn = $('home'), gyroBtn = $('gyroT'), invEl = $('inv'), modesEl = $('modes'), resetBtn = $('reset');
 const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
 
+diag('versión ' + VERSION);
 window.addEventListener('error', e => showHint('error: ' + e.message));
 window.addEventListener('unhandledrejection', e => showHint('error: ' + (e.reason && e.reason.message || e.reason)));
 
@@ -199,8 +200,9 @@ function drawQuad(buf, data, tex, tint, alpha = 1) {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-function tans() { const tx = Math.tan(FOVX / 2); return [tx, tx * H / W]; }
-const metersPerPx = d => d * 2 * Math.tan(FOVX / 2) / W;   // cuánto mide un px a distancia d
+// el fov va sobre el lado más corto de la pantalla (celu vertical: el ancho; compu apaisada: el alto)
+function tans() { const t = Math.tan(FOVX / 2); return W <= H ? [t, t * H / W] : [t * W / H, t]; }
+const metersPerPx = d => d * 2 * tans()[0] / W;   // cuánto mide un px a distancia d
 
 // foto con marco de grosor fijo en pantalla, el marco apenas detrás
 function drawFramed(p, tex, color) {
@@ -541,9 +543,11 @@ async function startCamera() {
     video.srcObject = s;
     await video.play();
     camReady = true;
+    diag('cámara de fotos: abierta ' + video.videoWidth + 'x' + video.videoHeight);
     rtcPistas();   // en una sala, los demás ven lo que encuadrás
   } catch (e) {
     showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
+    diag('cámara de fotos: falló ' + (e && e.name || e));
   } finally {
     camStarting = false;
     ui();
@@ -619,7 +623,7 @@ let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
   const holding = !!held, camUp = camOn && camReady, canEdit = started && (holding || camUp);
-  show(joyEl, started);
+  show(joyEl, started && TACTIL);
   show(invEl, started);
   show(homeBtn, started);
   show($('salaBtn'), started);
@@ -750,6 +754,48 @@ joyEl.addEventListener('pointermove', e => { if (e.pointerId === joy.id) joyUpda
 joyEl.addEventListener('pointerup', joyEnd);
 joyEl.addEventListener('pointercancel', joyEnd);
 
+// ---------- compu: teclado y rueda del mouse ----------
+const TACTIL = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+const teclas = new Set();
+function tecladoMover() {
+  const k = c => teclas.has(c);
+  const x = (k('KeyD') || k('ArrowRight') ? 1 : 0) - (k('KeyA') || k('ArrowLeft') ? 1 : 0);
+  const y = (k('KeyS') || k('ArrowDown') ? 1 : 0) - (k('KeyW') || k('ArrowUp') ? 1 : 0);
+  const l = Math.hypot(x, y) || 1, rapido = k('ShiftLeft') || k('ShiftRight') ? 1.8 : 1;
+  return [x / l * rapido, y / l * rapido];
+}
+const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
+  'C: cámara · espacio: sacar foto / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
+  '1-4: modos · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
+const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
+const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
+window.addEventListener('keydown', e => {
+  if (escribiendo() || e.metaKey || e.ctrlKey) return;
+  teclas.add(e.code);
+  if (e.repeat || !started) return;
+  const c = e.code;
+  const click = el => { if (visible(el)) el.click(); };
+  if (c === 'Space') { e.preventDefault(); if (held) click(dropBtn); else click(shootBtn); }
+  else if (c === 'Enter') click(dropBtn);
+  else if (c === 'Escape') { if (held) click(cancelBtn); else for (const id of ['salaPanel', 'fovPanel', 'diag', 'personajePanel', 'salasPanel']) { const el = $(id); if (el) el.style.display = 'none'; } }
+  else if (c === 'Delete' || c === 'Backspace') click(trashBtn);
+  else if (c === 'KeyC' && !held) click(camOn ? unequipBtn : equipBtn);
+  else if (c === 'KeyG') click(grillaBtn);
+  else if (c === 'KeyH') showHint(ATAJOS);
+  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'encuadre', 'girar'][+c.slice(5) - 1]; if (visible(modesEl)) { setMode(m); showHint(MODE_HINT[m]); } }
+  if (c.startsWith('Arrow')) e.preventDefault();
+});
+window.addEventListener('keyup', e => teclas.delete(e.code));
+window.addEventListener('blur', () => teclas.clear());
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (!started || !(held || (camOn && camReady))) return;
+  const L = cur(), d = Math.max(-200, Math.min(200, e.deltaY || e.deltaX));
+  if (e.shiftKey) scaleBy(L, Math.exp(-d * 0.002));
+  else if (e.altKey) rollBy(L, d * 0.004);
+  else setDist(L, clamp(len(L.c) * Math.exp(d * 0.0015), DIST_MIN, DIST_MAX));
+}, { passive: false });
+
 // ---------- dedos sobre la pantalla ----------
 const touches = new Map(); // id -> {x, y, x0, y0, t0, moved, crop}
 let gesture = null;        // dos dedos
@@ -819,6 +865,8 @@ canvas.addEventListener('pointermove', e => {
   }
   // girar: como una bola, la cara de adelante sigue al dedo
   if (mode === 'girar') { spinBy(L, -dx * 0.008, -dy * 0.008); return; }
+  // editor de personaje abierto: arrastrar gira la cámara alrededor tuyo
+  if (pjVista) { pjVista.ang -= dx * 0.008; return; }
   // mirar
   const kk = invertLook ? -LOOK : LOOK;
   yawOff += dx * kk;
@@ -830,7 +878,7 @@ function endTouch(e) {
   if (!t) return;
   touches.delete(e.pointerId);
   if (touches.size < 2) gesture = null;
-  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held) {
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
     const w = workAt(e.clientX, e.clientY);
     if (w) pick(w);
   }
@@ -851,14 +899,50 @@ startEl.addEventListener('click', async () => {
   ui();
   if (camOn) await startCamera();
   if (sala.active) rtcMedios();   // micrófono y cara recién después de tocar (en iPhone, pedirlos antes falla)
-  showHint('joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla');
+  showHint(TACTIL ? 'joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla'
+    : 'WASD o flechas para moverte · arrastrá con el mouse para mirar<br>clic en una foto para agarrarla · tecla H: atajos');
 });
 
 // ---------- loop ----------
 let last = performance.now();
 function frame(now) {
-  try { draw(now); } catch (e) { showHint('error: ' + e.message); }
+  if (!gl.isContextLost()) {
+    try { draw(now); pantallaOk(now); } catch (e) { showHint('error: ' + e.message); diagUna('ERROR dibujando: ' + e.message + ' ' + ((e.stack || '').split('\n')[1] || '').trim()); }
+  }
   requestAnimationFrame(frame);
+}
+
+// ---------- pantalla gris / negra: si el iPhone se lleva el contexto de WebGL, recargar ----------
+// (pasa al volver del fondo cuando el sistema necesita memoria). Se recarga guardando dónde estabas.
+function recargarSeguro(por) {
+  diag('recargo: ' + por);
+  try { sessionStorage.setItem('volver', JSON.stringify({ pos, yawOff, pitchOff, t: Date.now() })); } catch (e) {}
+  diagGuardar();
+  location.reload();
+}
+canvas.addEventListener('webglcontextlost', e => {
+  e.preventDefault(); diag('webgl: se perdió el contexto');
+  setTimeout(() => { if (gl.isContextLost() && !document.hidden) recargarSeguro('webgl no volvió'); }, 2500);
+});
+canvas.addEventListener('webglcontextrestored', () => recargarSeguro('webgl volvió (las texturas se perdieron)'));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && gl.isContextLost()) setTimeout(() => { if (gl.isContextLost()) recargarSeguro('webgl perdido al volver'); }, 1500);
+});
+try {
+  const v = JSON.parse(sessionStorage.getItem('volver') || 'null');
+  sessionStorage.removeItem('volver');
+  if (v && Date.now() - v.t < 60000) { pos[0] = v.pos[0]; pos[1] = v.pos[1]; pos[2] = v.pos[2]; yawOff = v.yawOff; pitchOff = v.pitchOff; diag('volví a donde estaba'); }
+} catch (e) {}
+// cada 3 s mira 5 puntos de la pantalla: si son todos iguales y claros, algo anda mal (se anota)
+let pantallaT = 0;
+const pantallaPx = new Uint8Array(4);
+function pantallaOk(now) {
+  if (now - pantallaT < 3000) return;
+  pantallaT = now;
+  const pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]], vals = [];
+  for (const [x, y] of pts) { gl.readPixels(Math.floor(canvas.width * x), Math.floor(canvas.height * y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pantallaPx); vals.push(pantallaPx.join(',')); }
+  const lum = pantallaPx[0] + pantallaPx[1] + pantallaPx[2];
+  if (vals.every(v => v === vals[0]) && lum > 90) diagUna(`pantalla pareja rgb(${vals[0]}) pos ${pos.map(v => v.toFixed(1))} gente ${sala.gente.size}`);
 }
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -866,12 +950,14 @@ function draw(now) {
   if (held && held.aim) stepAim(dt);
   const b = basis();
 
-  if (joy.x || joy.y) {
+  const [kx, ky] = tecladoMover();
+  const mx = clamp(joy.x + kx, -1, 1), my = clamp(joy.y + ky, -1, 1);
+  if (mx || my) {
     let fw = [b.f[0], 0, b.f[2]];
     if (len(fw) < 0.2) fw = [b.u[0], 0, b.u[2]];
     fw = norm(fw);
     const rt = norm(cross(fw, [0, 1, 0]));
-    const v = add(mul(fw, -joy.y), mul(rt, joy.x));
+    const v = add(mul(fw, -my), mul(rt, mx));
     pos[0] += v[0] * MOVE * dt; pos[2] += v[2] * MOVE * dt;
   }
   fisica(dt);
@@ -882,6 +968,16 @@ function draw(now) {
     preview.fresh = false;
   }
 
+  if (pjVista) {
+    // editor de personaje: la cámara se va afuera y te mira (pos se usa como ojo durante el dibujo)
+    const yo = pos.slice(), cam = pjCamara();
+    pos[0] = cam.eye[0]; pos[1] = cam.eye[1]; pos[2] = cam.eye[2];
+    try { escena(cam.b, dt, yo); } finally { pos[0] = yo[0]; pos[1] = yo[1]; pos[2] = yo[2]; }
+  } else escena(b, dt, null);
+  if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
+}
+
+function escena(b, dt, yo) {
   gl.clearColor(0.04, 0.04, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   const m = matrix(b);
@@ -911,9 +1007,11 @@ function draw(now) {
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
   for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id)) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
+  if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
 
   // en la mano
-  if (held) {
+  if (yo) { /* en el editor no se muestra lo que tenés en la mano */ }
+  else if (held) {
     drawFramed(heldPose(b), held.work.tex, [1, 1, 1]);
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
@@ -922,7 +1020,7 @@ function draw(now) {
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)
-  if (held) {
+  if (held && !yo) {
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     drawQuad(held.work.buf, null, held.work.tex, [1, 1, 1], 0.35);
@@ -930,8 +1028,6 @@ function draw(now) {
     gl.disable(gl.BLEND);
   }
   gl.disableVertexAttribArray(Q.p); gl.disableVertexAttribArray(Q.uv);
-
-  if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
 // ---------- auto-actualización ----------

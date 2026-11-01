@@ -49,6 +49,7 @@ function rtcStop() {
   for (const id of [...rtc.peers.keys()]) rtcCerrar(id);
   for (const s of [rtc.mic, rtc.cara]) if (s) s.getTracks().forEach(t => t.stop());
   rtc.mic = rtc.cara = null;
+  vozArmar();
   rtcPintar();
 }
 
@@ -63,7 +64,7 @@ async function rtcMediosYa() {
   if (rtc.cara && !rtcViva(rtc.cara)) rtc.cara = null;
   if (rtc.micOn && !rtc.mic) {
     try { rtc.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false }); }
-    catch (e) { showHint('no pude abrir el micrófono'); rtc.micOn = false; }
+    catch (e) { showHint('no pude abrir el micrófono'); diag('mic: falló ' + e.name); rtc.micOn = false; }
   }
   if (!rtc.micOn && rtc.mic) { rtc.mic.getTracks().forEach(t => t.stop()); rtc.mic = null; }
   const quieroCara = rtc.caraOn && !camOn;
@@ -71,9 +72,10 @@ async function rtcMediosYa() {
     try {
       rtc.cara = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 320 } } });
       if (!rtc.on || camOn || !rtc.caraOn) { rtc.cara.getTracks().forEach(t => t.stop()); rtc.cara = null; }
-    } catch (e) { rtc.caraFallo = Date.now(); if (!rtc.caraAviso) showHint('no pude abrir la cámara frontal'); rtc.caraAviso = true; }
+    } catch (e) { diag('cara: falló ' + e.name); rtc.caraFallo = Date.now(); if (!rtc.caraAviso) showHint('no pude abrir la cámara frontal'); rtc.caraAviso = true; }
   }
   if (!quieroCara && rtc.cara) { rtc.cara.getTracks().forEach(t => t.stop()); rtc.cara = null; }
+  if ((rtc.mic || vozCadena.prueba) !== vozCadena.micUsado) vozArmar();   // efecto de voz sobre el micrófono nuevo
   const yo = document.getElementById('yoCara');
   yo.srcObject = rtc.cara; yo.style.display = rtc.cara ? '' : 'none';
   if (rtc.cara) yo.play().catch(() => {});
@@ -101,7 +103,7 @@ function rtcPonerPistas(p) {
   for (const t of p.pc.getTransceivers()) {
     const kind = t.receiver.track && t.receiver.track.kind;
     if (!t.sender || t.stopped) continue;
-    if (kind === 'audio') t.sender.replaceTrack(rtc.mic ? rtc.mic.getAudioTracks()[0] : null).catch(() => {});
+    if (kind === 'audio') { const a = vozPista(); if (t.sender.track !== a) t.sender.replaceTrack(a).catch(() => {}); }
     if (kind === 'video') {
       const v = vids.indexOf(t) === 1 ? rtcVideoVista() : (rtc.cara ? rtc.cara.getVideoTracks()[0] : null);
       if (t.sender.track !== v) t.sender.replaceTrack(v).catch(() => {});
@@ -121,6 +123,7 @@ setInterval(() => {
   const caraMuerta = rtc.cara && !rtcViva(rtc.cara);
   const faltaCara = !rtc.cara && rtc.caraOn && !camOn && Date.now() - (rtc.caraFallo || 0) > 10000;
   const faltaMic = !rtc.mic && rtc.micOn;
+  if (micMuerto || caraMuerta) diag('rtc: ' + (micMuerto ? 'mic ' : '') + (caraMuerta ? 'cara ' : '') + 'muerto, reabro');
   if (micMuerto || caraMuerta || faltaCara || faltaMic) rtcMedios();
   else rtcPistas();   // por si la cámara de fotos se reabrió
 }, 2000);
@@ -139,9 +142,14 @@ async function rtcNuevo(id) {
   rtc.peers.set(id, p);
   pc.ontrack = e => rtcPistaRemota(p, e.track, e.transceiver);
   pc.onconnectionstatechange = () => {
+    diag(`rtc ${id.slice(0, 4)}: ${pc.connectionState}`);
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-      if (rtc.peers.get(id) === p) { rtcCerrar(id); setTimeout(rtcSync, 3000); }
+      if (rtc.peers.get(id) === p) { rtcCerrar(id); setTimeout(rtcSync, 1500); }
     }
+    // "disconnected" a veces se queda así un rato largo: si no vuelve en 4 s, se rearma
+    if (pc.connectionState === 'disconnected') setTimeout(() => {
+      if (rtc.peers.get(id) === p && pc.connectionState === 'disconnected') { diag(`rtc ${id.slice(0, 4)}: no vuelve, rearmo`); rtcCerrar(id); setTimeout(rtcSync, 500); }
+    }, 4000);
   };
   return p;
 }
@@ -203,9 +211,8 @@ function rtcCerrar(id) {
   if (p.vistaV) p.vistaV.remove();
   if (p.audio) p.audio.remove();
   if (p.src) try { p.src.disconnect(); } catch (e) {}
-  if (p.faceTex) gl.deleteTexture(p.faceTex);
+  for (const k of ['caraR', 'caraQ']) if (p[k]) gl.deleteTexture(p[k].tex);
   if (p.vistaTex) gl.deleteTexture(p.vistaTex);
-  if (p.faceRTex) gl.deleteTexture(p.faceRTex);
 }
 
 // ---------- lo que llega del otro ----------
@@ -265,57 +272,48 @@ function rtcBoca(id, head) {
   else p.panner.setPosition(...head);
 }
 
-// cara del otro como textura redonda (el resto es transparente y el shader lo descarta).
-// congelar: está sosteniendo la cámara de fotos (el video trae lo que encuadra): queda la última cara
-function rtcCara(id, congelar) {
-  const p = rtc.peers.get(id);
-  if (p && congelar) return p.faceOk ? p.faceTex : null;
-  if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
-  if (!p.faceC) {
-    p.faceC = document.createElement('canvas'); p.faceC.width = p.faceC.height = 128;
-    p.faceX = p.faceC.getContext('2d');
-    p.faceTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, p.faceTex);
+// cara como textura, recortada con la proporción de la cabeza (aspect = alto / ancho).
+// redonda: elipse (el resto transparente, el shader lo descarta); si no, rectángulo.
+// congelar: está sosteniendo la cámara de fotos: queda la última imagen.
+function rtcCaraDe(h, v, aspect, redonda, congelar) {
+  const key = redonda ? 'caraR' : 'caraQ';
+  let t = h[key];
+  if (congelar) return t && t.ok ? t.tex : null;
+  if (!v || v.readyState < 2 || !v.videoWidth) return null;
+  if (!t) {
+    t = h[key] = { c: document.createElement('canvas'), tex: gl.createTexture(), ok: false };
+    t.x = t.c.getContext('2d');
+    gl.bindTexture(gl.TEXTURE_2D, t.tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
-  const v = p.video, x = p.faceX, s = Math.min(v.videoWidth, v.videoHeight);
-  x.clearRect(0, 0, 128, 128);
-  x.save(); x.beginPath(); x.arc(64, 64, 63, 0, Math.PI * 2); x.clip();
-  x.drawImage(v, (v.videoWidth - s) / 2, (v.videoHeight - s) / 2, s, s, 0, 0, 128, 128);
-  x.restore();
-  gl.bindTexture(gl.TEXTURE_2D, p.faceTex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, p.faceC);
-  p.faceOk = true;
-  return p.faceTex;
-}
-
-// cara del otro recortada en rectángulo (para el personaje caja); aspect = alto / ancho
-function rtcCaraRect(id, aspect, congelar) {
-  const p = rtc.peers.get(id);
-  if (p && congelar) return p.faceROk ? p.faceRTex : null;
-  if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
-  const cw = 128, ch = Math.round(128 * aspect);
-  if (!p.faceRC) {
-    p.faceRC = document.createElement('canvas'); p.faceRX = p.faceRC.getContext('2d');
-    p.faceRTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, p.faceRTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  }
-  if (p.faceRC.width !== cw || p.faceRC.height !== ch) { p.faceRC.width = cw; p.faceRC.height = ch; }
-  const v = p.video, vw = v.videoWidth, vh = v.videoHeight;
-  let sw = vw, sh = vw * aspect;                 // recorte centrado con la proporción de la caja
+  const cw = 128, ch = Math.max(16, Math.round(128 * aspect));
+  if (t.c.width !== cw || t.c.height !== ch) { t.c.width = cw; t.c.height = ch; }
+  const vw = v.videoWidth, vh = v.videoHeight;
+  let sw = vw, sh = vw * aspect;
   if (sh > vh) { sh = vh; sw = vh / aspect; }
-  p.faceRX.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cw, ch);
-  gl.bindTexture(gl.TEXTURE_2D, p.faceRTex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, p.faceRC);
-  p.faceROk = true;
-  return p.faceRTex;
+  const x = t.x;
+  x.clearRect(0, 0, cw, ch);
+  x.save();
+  if (redonda) { x.beginPath(); x.ellipse(cw / 2, ch / 2, cw / 2 - 1, ch / 2 - 1, 0, 0, Math.PI * 2); x.clip(); }
+  x.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cw, ch);
+  x.restore();
+  gl.bindTexture(gl.TEXTURE_2D, t.tex);
+  const fmt = redonda ? gl.RGBA : gl.RGB;
+  gl.texImage2D(gl.TEXTURE_2D, 0, fmt, fmt, gl.UNSIGNED_BYTE, t.c);
+  t.ok = true;
+  return t.tex;
+}
+function rtcCaraTex(id, aspect, redonda, congelar) {
+  const p = rtc.peers.get(id);
+  return p ? rtcCaraDe(p, p.video, aspect, redonda, congelar) : null;
+}
+// tu propia cara (para verte en el editor de personaje)
+const rtcYo = {};
+function rtcMiCara(aspect, redonda) {
+  return rtc.cara ? rtcCaraDe(rtcYo, document.getElementById('yoCara'), aspect, redonda, false) : null;
 }
 
 // lo que el otro está encuadrando con la cámara de fotos, como textura
