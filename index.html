@@ -121,6 +121,11 @@
     border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #fff;
     -webkit-user-select: text; user-select: text; touch-action: manipulation; outline: none;
   }
+  .oculto { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; top: 0; }
+  #yoCara {
+    position: fixed; left: 12px; top: calc(30px + env(safe-area-inset-top)); width: 56px; height: 56px; z-index: 3;
+    border-radius: 50%; object-fit: cover; transform: scaleX(-1); border: 2px solid rgba(255,255,255,0.6); pointer-events: none;
+  }
   #modes {
     position: fixed; left: 0; right: 0; bottom: calc(176px + env(safe-area-inset-bottom));
     display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
@@ -147,6 +152,8 @@
 </div>
 <div id="top">
   <div id="salaBtn" class="ctl pill" style="display:none">sala</div>
+  <div id="micBtn" class="ctl pill" style="display:none">mic</div>
+  <div id="caraBtn" class="ctl pill" style="display:none">cara</div>
   <div id="home" class="ctl pill" style="display:none">inicio</div>
   <div id="gyroT" class="ctl pill" style="display:none"></div>
   <div id="fov" class="ctl pill" style="display:none"></div>
@@ -175,10 +182,12 @@
     <div id="salaSalir" class="pill boton">volver a mi museo</div>
   </div>
 </div>
+<video id="yoCara" playsinline muted autoplay style="display:none"></video>
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
 <script src="sala.js"></script>
+<script src="rtc.js"></script>
 <script src="game.js"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

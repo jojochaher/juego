@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v6';
+const VERSION = 'v7';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -473,7 +473,9 @@ function stopCamera() {
 function setCam(on) {
   camOn = on;
   try { localStorage.setItem('camara', on ? '1' : '0'); } catch (e) {}
-  if (on) startCamera(); else { stopCamera(); if (!held) setMode('mover'); }
+  // la cámara de fotos (trasera) y la de tu cara (frontal) no pueden estar prendidas a la vez
+  if (on) { rtcSoltarCara(); startCamera(); }
+  else { stopCamera(); if (!held) setMode('mover'); rtcMedios(); }
   buzz(10);
   ui();
 }
@@ -527,6 +529,8 @@ function ui() {
   show(invEl, started);
   show(homeBtn, started);
   show($('salaBtn'), started);
+  show($('micBtn'), started && sala.active);
+  show($('caraBtn'), started && sala.active);
   show($('fov'), started);
   show(gyroBtn, started && gyroMode);
   show(distEl, canEdit);
@@ -854,7 +858,7 @@ const salaPrevia = salaGuardada();
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
   pos, works, joy,
-  get held() { return held; }, sala, salaYo, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
+  get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },

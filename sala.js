@@ -52,6 +52,7 @@ async function salaEntrar(hash) {
   sala.borradas.clear(); sala.gente.clear(); sala.cargando.clear();
   try { localStorage.setItem('sala', hash); } catch (e) {}
   salaAbrirConexiones();
+  rtcStart();
   showHint('entraste a la sala · lo que hagas acá lo ven todos los que tengan la contraseña');
   ui(); salaPintar();
 }
@@ -85,6 +86,7 @@ function salaAbrirConexiones() {
 }
 
 function salaCerrarConexiones() {
+  rtcStop();
   if (sala.esObras) sala.esObras.close();
   if (sala.esGente) sala.esGente.close();
   sala.esObras = sala.esGente = null;
@@ -196,6 +198,7 @@ function salaCambioGente(path, data, type) {
     if (parts.length === 1) salaPersona(parts[0], data);
   }
   salaPintar();
+  rtcSync();
 }
 
 function salaPersona(id, d) {
@@ -247,13 +250,15 @@ function salaPalo(a, b, col) {
 // articulación redonda (para que los palitos no queden cortados en rodillas y codos)
 let salaB = null;
 function salaJunta(c, col) { drawQuad(scratch, quadData(c, salaB.r, salaB.u, LIMB, LIMB), salaDisco(), col); }
-function salaBola(c, r, col, b) { drawQuad(scratch, quadData(c, b.r, b.u, 2 * r, 2 * r), salaDisco(), col); }
+function salaBola(c, r, col, b, tex) { drawQuad(scratch, quadData(c, b.r, b.u, 2 * r, 2 * r), tex || salaDisco(), col); }
 
 const lerpAng = (a, b, k) => { let d = b - a; d = Math.atan2(Math.sin(d), Math.cos(d)); return a + d * k; };
 const dirYaw = y => [-Math.sin(y), 0, -Math.cos(y)];
 
 function salaDraw(b, dt) {
-  if (!sala.active || !sala.gente.size) return;
+  if (!sala.active) return;
+  rtcOido(b);
+  if (!sala.gente.size) return;
   const now = Date.now(), tt = now / 1000;
   salaB = b;
   for (const [id, p] of sala.gente) {
@@ -314,9 +319,17 @@ function salaDraw(b, dt) {
       salaJunta(sh, col); salaJunta(elbow, col); salaJunta(hand, col);
       if (s > 0 && p.raise > 0.5) drawQuad(scratch, quadData(add(hand, mul(look, 0.02)), lookRight, norm(cross(lookRight, look)), 0.13, 0.09), white, dark);
     }
-    // cabeza, y ojos que miran hacia donde mira (solo se ven si te está mirando)
-    salaBola(E, 0.13, col, b);
-    if (dot(look, sub(pos, E)) > 0) {
+    // cabeza: si tiene la cara prendida y te mira, se ve su cara en vivo (en pausa si sostiene la cámara)
+    rtcBoca(id, E);
+    const mira = dot(look, sub(pos, E)) > 0;
+    const cara = rtcCara(id);
+    if (cara && mira) {
+      salaBola(add(E, mul(norm(sub(E, pos)), 0.01)), 0.2, col, b);       // aro de su color, apenas detrás
+      salaBola(E, 0.18, p.cam ? [0.5, 0.5, 0.5] : [1, 1, 1], b, cara);
+      continue;
+    }
+    salaBola(E, cara ? 0.18 : 0.13, col, b);
+    if (mira) {
       const eyeUp = norm(cross(lookRight, look));
       for (const s of [1, -1]) salaBola(add(add(add(E, mul(look, 0.1)), mul(lookRight, 0.045 * s)), mul(eyeUp, 0.02)), 0.022, dark, b);
     }
