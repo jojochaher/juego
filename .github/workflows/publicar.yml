@@ -1,0 +1,53 @@
+# Publica el juego en GitHub Pages.
+# - Solo cuando cambian archivos del juego (no por notas ni pruebas).
+# - Una publicación a la vez (las demás esperan su turno).
+# - Si GitHub tiene una publicación anterior trabada ("in progress deployment"), espera y reintenta solo.
+name: publicar
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['CLAUDE.md', 'tests/**', '.gitignore', '.github/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: https://jojochaher.github.io/juego/
+    steps:
+      - uses: actions/checkout@v4
+      - name: armar el sitio (sin pruebas ni notas)
+        run: |
+          mkdir _site
+          cp *.html *.js *.json *.png _site/
+          touch _site/.nojekyll
+          ls -la _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: intento1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.intento1.outcome == 'failure'
+        run: echo "algo trabado en GitHub, espero 5 min" && sleep 300
+      - id: intento2
+        if: steps.intento1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - if: steps.intento1.outcome == 'failure' && steps.intento2.outcome == 'failure'
+        run: echo "sigue trabado, espero 15 min" && sleep 900
+      - id: intento3
+        if: steps.intento1.outcome == 'failure' && steps.intento2.outcome == 'failure'
+        uses: actions/deploy-pages@v4
