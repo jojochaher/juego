@@ -86,15 +86,18 @@ function cuentaAbrir() {
 }
 document.addEventListener('DOMContentLoaded', () => {
   const $c = id => document.getElementById(id);
+  let intentando = false;   // un doble toque mandaba dos pedidos y el segundo dejaba un error viejo
   const intentar = async crear => {
+    if (intentando || cuenta) return;
     const email = $c('cuentaMail').value.trim(), pass = $c('cuentaPass').value;
     if (!email || !pass) { $c('cuentaError').textContent = 'falta el email o la contraseña'; return; }
     $c('cuentaError').textContent = crear ? 'creando…' : 'entrando…';
+    intentando = true;
     try {
       await cuentaEntrar(email, pass, crear);
       $c('cuentaPass').value = ''; $c('cuentaPass').blur(); $c('cuentaMail').blur();
       cuentaPintar();
-    } catch (e) { $c('cuentaError').textContent = e.message; }
+    } catch (e) { $c('cuentaError').textContent = e.message; } finally { intentando = false; }
   };
   $c('cuentaEntrar').addEventListener('click', () => intentar(false));
   $c('cuentaCrear').addEventListener('click', () => intentar(true));

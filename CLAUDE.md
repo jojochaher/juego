@@ -55,9 +55,9 @@ Mantener al día: cuando cambia algo técnico, editar la parte que cambia (no re
 
 - Proyecto `juego-dd2eb` (plan Spark, cuenta de Google de José). Realtime Database https://juego-dd2eb-default-rtdb.firebaseio.com, por REST + EventSource, sin SDK.
 - El contenedor de Claude NO llega a firebaseio.com. Para probar contra la base real: el Chrome de José (fetch desde la página del juego) o el mock de los tests.
-- Reglas: ver firebase-rules.json (salas/<64 chars> legible/escribible por quien tenga el hash; listar/borrar todo `salas` y leer `comentarios` solo el uid de José; comentarios: cualquiera crea uno nuevo, nadie lo edita; `autor: 'jose'` solo con su uid). Si el uid dice 'PENDIENTE' (5 lugares), José todavía no creó su cuenta.
+- Reglas: ver firebase-rules.json (salas/<64 chars> legible/escribible por quien tenga el hash; listar/borrar todo `salas` y leer `comentarios` solo el uid de José; comentarios: cualquiera crea uno nuevo, nadie lo edita; `autor: 'jose'` solo con su uid). El uid de José aparece en 5 lugares.
 - `?db=` solo se acepta si es http://localhost (pruebas): un link con otra base no se lleva fotos ni el token de admin.
-- Auth: Email/Password activado. Web API key (pública) en cuenta.js. signUp / signInWithPassword / securetoken por REST; token en localStorage 'cuenta' y `?auth=` en la base. Una cuenta que no es la de las reglas manda comentarios como 'otro' (reintenta solo). Después de que José cree la suya: desactivar el alta de cuentas (Authentication → Settings → User actions).
+- Auth: Email/Password activado. Web API key (pública) en cuenta.js. signUp / signInWithPassword / securetoken por REST; token en localStorage 'cuenta' y `?auth=` en la base. Una cuenta que no es la de las reglas manda comentarios como 'otro' (reintenta solo). El alta de cuentas está cerrada (Authentication → Settings → User actions): si José necesita otra cuenta, abrirla un momento ahí.
 - Modelo: `salas/<sha256('juego:'+contraseña)>/`
   - `poses/<id>` = {c, r, u, w, h, uv}
   - `imgs/<id>` = dataURL JPEG 768 px q0.8
@@ -98,7 +98,7 @@ Mantener al día: cuando cambia algo técnico, editar la parte que cambia (no re
 
 ## Estado
 
-- v10.3 (1 nov 2026, noche): comentarios desde el juego + cuenta de admin (ver/borrar todas las salas). Reglas publicadas con el uid 'PENDIENTE': falta que José cree su cuenta en el juego, poner su uid en las reglas y desactivar el alta de cuentas. Repo privado juego-comentarios creado; falta darle acceso a la app de Claude y que José pegue el secreto de la base (FIREBASE_SECRET) en sus secretos de Actions.
+- v10.3 (1 nov 2026, noche): comentarios desde el juego + cuenta de admin (ver/borrar todas las salas). José creó su cuenta (j.chaherlb@gmail.com); su uid está en las reglas publicadas y el alta de cuentas está cerrada (signUp da ADMIN_ONLY_OPERATION). Repo privado juego-comentarios creado; falta darle acceso a la app de Claude y que José pegue el secreto de la base (FIREBASE_SECRET) en sus secretos de Actions.
 - v10.2 (1 nov 2026, tarde): grilla toda de a metro (también altura y tamaño) con guías 3D en x, z y verticales. José dijo que "la foto en la mano la veo bien por ahora" (los saltos de a metro no le molestan).
 - v10.1 (1 nov 2026, tarde): grilla de 90° y de a metro sobre los puntitos, guías nuevas (línea del piso + bajadas), puntitos del piso con profundidad. Pedido de José, primera parte de su lista (empieza por la grilla; la va mandando de a partes).
 - v10 (1 nov 2026, noche, José durmiendo): menos botones (menú ☰ y edición plegada), guías de la grilla, pellizcar sin torcer, aceleración del joystick, publicación propia con reintentos. Falta que José lo pruebe y diga qué le parece (pidió trabajar grilla, navegación/botones y manipulación; dijo que puede dar más detalle).

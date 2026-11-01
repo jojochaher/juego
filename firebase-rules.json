@@ -1,8 +1,8 @@
 {
   "rules": {
     "salas": {
-      ".read": "auth != null && auth.uid === 'PENDIENTE'",
-      ".write": "auth != null && auth.uid === 'PENDIENTE'",
+      ".read": "auth != null && auth.uid === 'vGy4rLJyfOODpY6EzFmYE9te2Ru2'",
+      ".write": "auth != null && auth.uid === 'vGy4rLJyfOODpY6EzFmYE9te2Ru2'",
       "$sala": {
         ".read": "$sala.length === 64",
         ".write": "$sala.length === 64",
@@ -14,13 +14,13 @@
       }
     },
     "comentarios": {
-      ".read": "auth != null && auth.uid === 'PENDIENTE'",
-      ".write": "auth != null && auth.uid === 'PENDIENTE'",
+      ".read": "auth != null && auth.uid === 'vGy4rLJyfOODpY6EzFmYE9te2Ru2'",
+      ".write": "auth != null && auth.uid === 'vGy4rLJyfOODpY6EzFmYE9te2Ru2'",
       "$id": {
         ".write": "!data.exists() && newData.exists()",
         ".validate": "newData.hasChildren(['texto', 'autor', 'v', 't'])",
         "texto": { ".validate": "newData.isString() && newData.val().length <= 4000" },
-        "autor": { ".validate": "newData.val() === 'otro' || (newData.val() === 'jose' && auth != null && auth.uid === 'PENDIENTE')" },
+        "autor": { ".validate": "newData.val() === 'otro' || (newData.val() === 'jose' && auth != null && auth.uid === 'vGy4rLJyfOODpY6EzFmYE9te2Ru2')" },
         "v": { ".validate": "newData.isString() && newData.val().length < 20" },
         "t": { ".validate": "newData.isNumber()" },
         "registro": { ".validate": "newData.isString() && newData.val().length < 100000" },
