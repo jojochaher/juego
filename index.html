@@ -119,6 +119,12 @@
   #salaPanel .fila { display: flex; gap: 8px; align-items: center; }
   #salaVer { flex: none; padding: 11px 12px; }
   #salaClave { color: #fff; font-size: 14px; word-break: break-all; }
+  #salaPrev { position: static; width: 90px; height: 120px; flex: none; z-index: auto; display: block; }
+  #salaPersonaje { display: flex; align-items: center; gap: 12px; margin-top: 12px; justify-content: center; }
+  #salaPersonaje .pill { padding: 6px 12px; font-size: 13px; }
+  #salaPersonaje .pill.on { background: rgba(255,255,255,0.9); color: #111; }
+  #salaPersonaje .fila { margin: 6px 0; }
+  #forma { width: 120px; accent-color: #fff; }
   #salaVer2 { flex: none; padding: 5px 10px; font-size: 12px; margin-left: auto; }
   #salaPass {
     flex: 1; min-width: 0; width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px; border-radius: 10px;
@@ -190,6 +196,13 @@
     <div class="tit">estás en una sala compartida</div>
     <div class="fila nota" id="salaClaveFila">contraseña: <span id="salaClave"></span><div id="salaVer2" class="pill">ver</div></div>
     <div id="salaGente" class="nota"></div>
+    <div id="salaPersonaje">
+      <canvas id="salaPrev" width="90" height="120"></canvas>
+      <div>
+        <div class="fila nota">tu personaje: <div class="pill" data-mod="palito">palito</div><div class="pill" data-mod="caja">caja</div></div>
+        <div class="fila nota" id="formaFila">ancha <input type="range" id="forma" min="-1" max="1" step="0.01"> alta</div>
+      </div>
+    </div>
     <div id="salaSalir" class="pill boton">volver a mi museo</div>
   </div>
 </div>

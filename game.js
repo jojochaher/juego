@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v7.3';
+const VERSION = 'v8';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -260,6 +260,53 @@ const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur()
 
 function worldPose(b, L) {
   return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice() };
+}
+
+// ---------- colisiones: las fotos son paredes y pisos ----------
+// casi horizontales (menos de 45°) = piso: te parás encima y subís escalones de hasta 40 cm sin saltar.
+// el resto = pared: no se atraviesa. Lo que tenés en la mano (o tiene otro) no choca.
+const CUERPO = 0.22, ESCALON = 0.4, GRAVEDAD = 9.8;
+let velY = 0;
+function solidas() {
+  const otros = salaEnManos();
+  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id));
+}
+const normal = w => norm(cross(w.r, w.u));
+function fisica(dt) {
+  const ws = solidas();
+  let pies = pos[1] - EYE;
+  // paredes: esferas apiladas de las rodillas a la cabeza; cada una se empuja afuera de cada foto, en horizontal
+  for (let pasada = 0; pasada < 2; pasada++) {
+    for (const w of ws) {
+      const n = normal(w);
+      if (Math.abs(n[1]) > 0.7) continue;
+      for (let hy = ESCALON + 0.05; hy <= EYE + 0.01; hy += 0.2) {
+        const q = [pos[0], pies + hy, pos[2]];
+        const d = sub(q, w.c);
+        const lx = clamp(dot(d, w.r), -w.w / 2, w.w / 2), ly = clamp(dot(d, w.u), -w.h / 2, w.h / 2);
+        const cp = add(w.c, add(mul(w.r, lx), mul(w.u, ly)));
+        const dist = len(sub(q, cp));
+        if (dist >= CUERPO) continue;
+        let e = sub(q, cp); e[1] = 0;
+        if (len(e) < 1e-4) { e = [n[0], 0, n[2]]; if (dot(e, d) < 0) e = mul(e, -1); }
+        e = norm(e);
+        pos[0] += e[0] * (CUERPO - dist); pos[2] += e[2] * (CUERPO - dist);
+      }
+    }
+  }
+  // piso: el más alto que esté abajo de los pies (o apenas arriba: escalón)
+  let suelo = 0;
+  for (const w of ws) {
+    const n = normal(w);
+    if (Math.abs(n[1]) <= 0.7) continue;
+    const y = w.c[1] - (n[0] * (pos[0] - w.c[0]) + n[2] * (pos[2] - w.c[2])) / n[1];
+    if (y > pies + ESCALON || y <= suelo) continue;
+    const d = sub([pos[0], y, pos[2]], w.c), m = 0.08;
+    if (Math.abs(dot(d, w.r)) <= w.w / 2 + m && Math.abs(dot(d, w.u)) <= w.h / 2 + m) suelo = y;
+  }
+  if (pies <= suelo + 0.001) { pies = suelo; velY = 0; }            // parado (o subió un escalón)
+  else { velY -= GRAVEDAD * dt; pies = Math.max(suelo, pies + velY * dt); if (pies === suelo) velY = 0; }
+  pos[1] = pies + EYE;
 }
 
 // ---------- grilla: alinear lo que está en la mano ----------
@@ -644,7 +691,7 @@ unequipBtn.addEventListener('click', () => setCam(false));
 
 // ---------- volver al inicio ----------
 homeBtn.addEventListener('click', () => {
-  pos[0] = 0; pos[1] = EYE; pos[2] = 0;
+  pos[0] = 0; pos[1] = EYE; pos[2] = 0; velY = 0;
   pitchOff = 0; yawOff = 0;
   yawOff = -heading(basis().f);
   buzz(10);
@@ -827,6 +874,7 @@ function draw(now) {
     const v = add(mul(fw, -joy.y), mul(rt, joy.x));
     pos[0] += v[0] * MOVE * dt; pos[2] += v[2] * MOVE * dt;
   }
+  fisica(dt);
 
   // la vista previa toma la proporción real de la cámara la primera vez
   if (preview.fresh && camReady && video.videoWidth) {

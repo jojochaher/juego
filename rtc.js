@@ -205,6 +205,7 @@ function rtcCerrar(id) {
   if (p.src) try { p.src.disconnect(); } catch (e) {}
   if (p.faceTex) gl.deleteTexture(p.faceTex);
   if (p.vistaTex) gl.deleteTexture(p.vistaTex);
+  if (p.faceRTex) gl.deleteTexture(p.faceRTex);
 }
 
 // ---------- lo que llega del otro ----------
@@ -289,6 +290,32 @@ function rtcCara(id, congelar) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, p.faceC);
   p.faceOk = true;
   return p.faceTex;
+}
+
+// cara del otro recortada en rectángulo (para el personaje caja); aspect = alto / ancho
+function rtcCaraRect(id, aspect, congelar) {
+  const p = rtc.peers.get(id);
+  if (p && congelar) return p.faceROk ? p.faceRTex : null;
+  if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
+  const cw = 128, ch = Math.round(128 * aspect);
+  if (!p.faceRC) {
+    p.faceRC = document.createElement('canvas'); p.faceRX = p.faceRC.getContext('2d');
+    p.faceRTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, p.faceRTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  if (p.faceRC.width !== cw || p.faceRC.height !== ch) { p.faceRC.width = cw; p.faceRC.height = ch; }
+  const v = p.video, vw = v.videoWidth, vh = v.videoHeight;
+  let sw = vw, sh = vw * aspect;                 // recorte centrado con la proporción de la caja
+  if (sh > vh) { sh = vh; sw = vh / aspect; }
+  p.faceRX.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cw, ch);
+  gl.bindTexture(gl.TEXTURE_2D, p.faceRTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, p.faceRC);
+  p.faceROk = true;
+  return p.faceRTex;
 }
 
 // lo que el otro está encuadrando con la cámara de fotos, como textura

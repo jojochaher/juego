@@ -28,6 +28,10 @@ if (!salaColor) {
   try { localStorage.setItem('color', JSON.stringify(salaColor)); } catch (e) {}
 }
 
+// personaje: 'palito' o 'caja' (cabeza rectangular sin torso); forma = alto/ancho de la caja (0.5 a 2)
+let salaModelo = 'palito', salaForma = 1;
+try { salaModelo = localStorage.getItem('modelo') === 'caja' ? 'caja' : 'palito'; salaForma = Math.min(2, Math.max(0.5, +localStorage.getItem('forma') || 1)); } catch (e) {}
+
 async function salaHash(pass) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('juego:' + pass));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -212,6 +216,7 @@ function salaEnviarPresencia() {
     col: salaColor.map(v => Math.round(v * 100) / 100),
     cam: camOn ? 1 : 0,          // apenas la equipás (antes de que abra): los demás congelan tu cara a tiempo
   };
+  if (salaModelo === 'caja') { est.mod = 1; est.fa = Math.round(salaForma * 100) / 100; }
   // lo que tengo en la mano (una foto agarrada o la vista previa de la cámara), para que los demás lo vean
   const L = held ? heldPose(basis()) : (camOn && camReady ? previewPose(basis()) : null);
   if (L) {
@@ -256,6 +261,8 @@ function salaPersona(id, d) {
   p.target = { p: d.p, yaw: d.yaw || 0, pitch: d.pitch || 0 };
   p.col = d.col || [0.8, 0.8, 0.8];
   p.cam = !!d.cam;
+  p.mod = d.mod === 1 ? 'caja' : 'palito';
+  p.fa = clamp(+d.fa || 1, 0.5, 2);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
     const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), mid: d.mid || null };
@@ -339,6 +346,7 @@ function salaDraw(b, dt) {
     let dy = p.disp.yaw - p.body; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
     if (Math.abs(dy) > 0.5 || p.walk > 0.2) p.body = lerpAng(p.body, p.disp.yaw, 1 - Math.exp(-dt * (p.walk > 0.2 ? 6 : 3)));
     p.raise += ((p.cam ? 1 : 0) - p.raise) * (1 - Math.exp(-dt * 5));
+    if (p.mod === 'caja') { salaCaja(id, p, b, tt, k); continue; }
 
     const col = p.col, dark = col.map(v => v * 0.35);
     const up = [0, 1, 0], down = [0, -1, 0];
@@ -382,21 +390,7 @@ function salaDraw(b, dt) {
       salaJunta(sh, col); salaJunta(elbow, col); salaJunta(hand, col);
       if (s > 0 && p.raise > 0.5) drawQuad(scratch, quadData(add(hand, mul(look, 0.02)), lookRight, norm(cross(lookRight, look)), 0.13, 0.09), white, dark);
     }
-    // lo que tiene en la mano: la foto que está moviendo o lo que está encuadrando con la cámara
-    if (p.mano) {
-      const T = p.manoT, M = p.mano;
-      for (let i = 0; i < 3; i++) { M.c[i] += (T.c[i] - M.c[i]) * k; M.r[i] += (T.r[i] - M.r[i]) * k; M.u[i] += (T.u[i] - M.u[i]) * k; }
-      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv;
-      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv };
-      if (M.mid) {
-        const w = works.find(x => x.id === M.mid);
-        if (w) drawFramed(pose, w.tex, col);
-      } else {
-        const v = p.cam && rtcVista(id);
-        if (v) drawFramed({ ...pose, uv: FULL }, v, col);
-        else drawFramed({ ...pose, uv: FULL }, salaOscuro(), col);
-      }
-    }
+    salaManoDe(id, p, k);
     // cabeza: si tiene la cara prendida y te mira, se ve su cara en vivo (congelada si sostiene la cámara)
     rtcBoca(id, E);
     const mira = dot(look, sub(pos, E)) > 0;
@@ -412,6 +406,91 @@ function salaDraw(b, dt) {
       for (const s of [1, -1]) salaBola(add(add(add(E, mul(look, 0.1)), mul(lookRight, 0.045 * s)), mul(eyeUp, 0.02)), 0.022, dark, b);
     }
   }
+}
+
+// lo que tiene en la mano: la foto que está moviendo o lo que está encuadrando con la cámara
+function salaManoDe(id, p, k) {
+    if (p.mano) {
+      const T = p.manoT, M = p.mano;
+      for (let i = 0; i < 3; i++) { M.c[i] += (T.c[i] - M.c[i]) * k; M.r[i] += (T.r[i] - M.r[i]) * k; M.u[i] += (T.u[i] - M.u[i]) * k; }
+      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv;
+      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv };
+      if (M.mid) {
+        const w = works.find(x => x.id === M.mid);
+        if (w) drawFramed(pose, w.tex, p.col);
+      } else {
+        const v = p.cam && rtcVista(id);
+        if (v) drawFramed({ ...pose, uv: FULL }, v, p.col);
+        else drawFramed({ ...pose, uv: FULL }, salaOscuro(), p.col);
+      }
+    }
+}
+
+// ---------- personaje caja: una cabeza rectangular (la cara va adelante) de la que salen brazos y piernas ----------
+const CAJA_PROF = 0.32, CAJA_TAM = 0.6;
+function salaCajaMedidas(fa) { return { H: CAJA_TAM * Math.sqrt(fa), W: CAJA_TAM / Math.sqrt(fa), D: CAJA_PROF }; }
+function salaCaja(id, p, b, tt, k) {
+  const col = p.col, w = p.walk;
+  const { H, W, D } = salaCajaMedidas(p.fa);
+  const yaw = p.disp.yaw, bp = p.disp.pitch * 0.35;
+  const fB = [-Math.sin(yaw) * Math.cos(bp), Math.sin(bp), -Math.cos(yaw) * Math.cos(bp)];
+  const rB = [Math.cos(yaw), 0, -Math.sin(yaw)];
+  const uB = cross(rB, fB);
+  const bob = Math.sin(tt * 1.8 + id.length) * 0.008 + Math.abs(Math.sin(p.phase)) * 0.035 * w;
+  const E = [p.disp.p[0], p.disp.p[1] + bob - 0.03 * w, p.disp.p[2]];
+  const C = add(E, mul(uB, 0.16 - H / 2));            // los ojos quedan cerca de arriba
+  const shade = f => col.map(v => v * f);
+  // caras de la caja (el frente es la cara en vivo si la tiene prendida)
+  drawQuad(scratch, quadData(sub(C, mul(fB, D / 2)), rB, uB, W, H), white, shade(0.55));       // atrás
+  drawQuad(scratch, quadData(add(C, mul(rB, W / 2)), fB, uB, D, H), white, shade(0.72));       // costados
+  drawQuad(scratch, quadData(sub(C, mul(rB, W / 2)), fB, uB, D, H), white, shade(0.72));
+  drawQuad(scratch, quadData(add(C, mul(uB, H / 2)), rB, fB, W, D), white, shade(0.9));        // arriba
+  drawQuad(scratch, quadData(sub(C, mul(uB, H / 2)), rB, fB, W, D), white, shade(0.45));       // abajo
+  const frente = add(C, mul(fB, D / 2 + 0.002)), izq = mul(rB, -1);   // visto de frente, su derecha es tu izquierda
+  const cara = rtcCaraRect(id, H / W, p.cam);
+  if (cara) {
+    drawQuad(scratch, quadData(frente, izq, uB, W, H), white, col);
+    drawQuad(scratch, quadData(add(frente, mul(fB, 0.002)), izq, uB, W * 0.9, H - W * 0.1), cara, p.cam ? [0.5, 0.5, 0.5] : [1, 1, 1]);
+  } else {
+    drawQuad(scratch, quadData(frente, izq, uB, W, H), white, col);
+    const ojos = add(add(frente, mul(fB, 0.002)), mul(uB, H / 2 - 0.16));
+    for (const s of [1, -1]) drawQuad(scratch, quadData(add(ojos, mul(rB, W * 0.2 * s)), izq, uB, 0.05, 0.05), salaDisco(), shade(0.3));
+  }
+  rtcBoca(id, E);
+  // piernas: salen de abajo de la caja y llegan al piso
+  const up = [0, 1, 0], down = [0, -1, 0];
+  const fwd = dirYaw(p.body), right = [Math.cos(p.body), 0, -Math.sin(p.body)];
+  const swing = a => norm(add(mul(down, Math.cos(a)), mul(fwd, Math.sin(a))));
+  const base = sub(C, mul(uB, H / 2 - 0.02));
+  const piso = p.disp.p[1] - EYE;
+  for (const s of [1, -1]) {
+    const hip = add(base, mul(right, Math.min(0.12, W / 2 - 0.05) * s));
+    const L = Math.max(0.2, (hip[1] - piso) / 2);
+    const a = Math.sin(p.phase) * 0.55 * w * s;
+    const knee = add(hip, mul(swing(a), L));
+    const bend = Math.max(0, Math.sin(p.phase + (s > 0 ? 0 : Math.PI))) * 0.7 * w;
+    const foot = add(knee, mul(swing(a - bend), L));
+    salaPalo(hip, knee, col); salaPalo(knee, foot, col);
+    salaJunta(knee, col); salaJunta(foot, col);
+  }
+  // brazos: salen de los costados
+  const look = [-Math.sin(yaw) * Math.cos(p.disp.pitch), Math.sin(p.disp.pitch), -Math.cos(yaw) * Math.cos(p.disp.pitch)];
+  for (const s of [1, -1]) {
+    const sh = add(add(C, mul(rB, (W / 2) * s)), mul(uB, -0.02));
+    const a = -Math.sin(p.phase) * 0.45 * w * s + Math.sin(tt * 1.3 + s) * 0.04;
+    let elbow = add(add(sh, mul(swing(a), 0.28)), mul(rB, 0.05 * s));
+    let hand = add(elbow, mul(swing(a + 0.25 * (1 - w)), 0.26));
+    if (s > 0 && p.raise > 0.01) {
+      const hold = add(add(E, mul(look, 0.42 + D / 2)), mul(rB, 0.1));
+      const holdElbow = add(add(sh, mul(look, 0.2 + D / 4)), [0, -0.1, 0]);
+      elbow = add(mul(elbow, 1 - p.raise), mul(holdElbow, p.raise));
+      hand = add(mul(hand, 1 - p.raise), mul(hold, p.raise));
+    }
+    salaPalo(sh, elbow, col); salaPalo(elbow, hand, col);
+    salaJunta(sh, col); salaJunta(elbow, col); salaJunta(hand, col);
+    if (s > 0 && p.raise > 0.5) drawQuad(scratch, quadData(add(hand, mul(look, 0.02)), rB, norm(cross(rB, look)), 0.13, 0.09), white, shade(0.35));
+  }
+  salaManoDe(id, p, k);
 }
 
 // ---------- panel de la sala ----------
@@ -431,7 +510,7 @@ function salaPintar() {
 salaBtn.addEventListener('click', () => {
   const open = salaPanel.style.display === 'none';
   salaPanel.style.display = open ? '' : 'none';
-  if (open) { salaVer2.textContent = 'ver'; salaPintar(); }
+  if (open) { salaVer2.textContent = 'ver'; salaPintar(); salaPintarPersonaje(); }
   if (open && !sala.active) setTimeout(() => salaPass.focus(), 50);
 });
 document.getElementById('salaEntrar').addEventListener('click', async () => {
@@ -444,6 +523,50 @@ document.getElementById('salaVer').addEventListener('click', () => {
   document.getElementById('salaVer').textContent = ver ? 'ocultar' : 'ver';
 });
 salaVer2.addEventListener('click', () => { salaVer2.textContent = salaVer2.textContent === 'ver' ? 'ocultar' : 'ver'; salaPintar(); });
+// personaje y forma (se ve un dibujito chico, porque a vos mismo no te ves)
+const salaPrev = document.getElementById('salaPrev'), salaFormaEl = document.getElementById('forma');
+function salaPintarPersonaje() {
+  for (const el of document.querySelectorAll('[data-mod]')) el.classList.toggle('on', el.dataset.mod === salaModelo);
+  document.getElementById('formaFila').style.display = salaModelo === 'caja' ? '' : 'none';
+  salaFormaEl.value = Math.log2(salaForma);
+  const x = salaPrev.getContext('2d'), Wc = salaPrev.width, Hc = salaPrev.height, px = Hc / 2.0;   // 2 m de alto
+  x.clearRect(0, 0, Wc, Hc);
+  const c = `rgb(${salaColor.map(v => Math.round(v * 255)).join(',')})`;
+  x.strokeStyle = c; x.fillStyle = c; x.lineCap = 'round'; x.lineWidth = 0.05 * px;
+  const cx = Wc / 2, piso = Hc - 4, ojo = piso - EYE * px;
+  const linea = (a, b2, c2, d) => { x.beginPath(); x.moveTo(a, b2); x.lineTo(c2, d); x.stroke(); };
+  if (salaModelo === 'caja') {
+    const { H, W } = salaCajaMedidas(salaForma);
+    const top = ojo - 0.16 * px, bot = top + H * px;
+    for (const s of [1, -1]) {
+      const hx = cx + Math.min(0.12, W / 2 - 0.05) * px * s;
+      linea(hx, bot, hx + 0.03 * px * s, piso);
+      linea(cx + W / 2 * px * s, top + H * px / 2, cx + (W / 2 + 0.12) * px * s, top + H * px / 2 + 0.5 * px);
+    }
+    x.fillRect(cx - W / 2 * px, top, W * px, H * px);
+    x.fillStyle = 'rgba(0,0,0,0.6)';
+    for (const s of [1, -1]) { x.beginPath(); x.arc(cx + W * 0.2 * px * s, ojo, 0.025 * px, 0, 7); x.fill(); }
+  } else {
+    const cuello = ojo + 0.17 * px, pelvis = ojo + 0.7 * px;
+    linea(cx, cuello, cx, pelvis);
+    for (const s of [1, -1]) {
+      linea(cx + 0.09 * px * s, pelvis, cx + 0.11 * px * s, piso);
+      linea(cx + 0.17 * px * s, cuello, cx + 0.22 * px * s, cuello + 0.55 * px);
+    }
+    linea(cx - 0.17 * px, cuello, cx + 0.17 * px, cuello);
+    x.beginPath(); x.arc(cx, ojo, 0.13 * px, 0, 7); x.fill();
+  }
+}
+for (const el of document.querySelectorAll('[data-mod]')) el.addEventListener('click', () => {
+  salaModelo = el.dataset.mod;
+  try { localStorage.setItem('modelo', salaModelo); } catch (e) {}
+  salaPintarPersonaje();
+});
+salaFormaEl.addEventListener('input', () => {
+  salaForma = clamp(Math.pow(2, +salaFormaEl.value), 0.5, 2);
+  try { localStorage.setItem('forma', salaForma); } catch (e) {}
+  salaPintarPersonaje();
+});
 salaPass.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('salaEntrar').click(); });
 document.getElementById('salaSalir').addEventListener('click', () => { salaSalir(); salaPanel.style.display = 'none'; });
 salaPintar();
