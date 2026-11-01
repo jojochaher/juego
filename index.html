@@ -163,11 +163,15 @@
   .miniFoto { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: rgba(255,255,255,0.06); }
   .miniFoto img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .miniFoto .x { position: absolute; top: 3px; right: 3px; width: 24px; height: 24px; border-radius: 12px; background: rgba(0,0,0,0.65); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; }
-  #salaPass {
+  #salaPass, .campo {
     flex: 1; min-width: 0; width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px; border-radius: 10px;
     border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: #fff;
     -webkit-user-select: text; user-select: text; touch-action: manipulation; outline: none;
   }
+  textarea.campo { flex: none; min-height: 120px; resize: vertical; font: 16px/1.4 -apple-system, system-ui, sans-serif; }
+  #comFotos { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+  #comFotos:empty { display: none; }
+  #cuentaUid { font: 11px ui-monospace, monospace; word-break: break-all; -webkit-user-select: text; user-select: text; }
   .oculto { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; top: 0; }
   #yoCara {
     position: fixed; left: 12px; top: calc(30px + env(safe-area-inset-top)); width: 56px; height: 56px; z-index: 3;
@@ -255,6 +259,7 @@
   <div class="fila"><div id="gyroT" class="pill" style="display:none"></div><div id="inv" class="pill"></div><div id="caraBtn" class="pill" style="display:none">cara</div></div>
   <div class="fila"><div class="pill abrirPersonaje cierra">tu personaje</div><div class="pill abrirSalas cierra">mis salas</div></div>
   <div class="fila"><div id="opcAtajos" class="pill cierra">atajos de teclado</div><div id="opcRegistro" class="pill cierra">registro</div></div>
+  <div class="fila"><div id="opcComentario" class="pill cierra">dejar un comentario</div></div>
 </div>
 <div id="personajePanel" style="display:none">
   <div class="fila"><b>tu personaje</b><span class="nota">arrastrá para girar</span><div id="pjListo" class="pill blanco" style="margin-left:auto">listo</div></div>
@@ -267,7 +272,7 @@
   <div class="fila"><span class="et"></span><div id="vozEscuchar" class="pill">escucharme</div><span class="nota">así te escuchan los demás</span></div>
 </div>
 <div id="salasPanel" class="hoja" style="display:none">
-  <div class="tit">mis salas <span class="nota">(las que usaste en este dispositivo)</span></div>
+  <div class="fila"><div class="tit" id="salasTit">mis salas</div><span id="salasSub" class="nota">(las que usaste en este dispositivo)</span><div id="salasModo" class="pill" style="display:none;margin-left:auto">ver todas</div></div>
   <div id="salasLista"></div>
   <div id="salasDetalle" style="display:none">
     <div class="fila"><b id="salasNombre"></b><span id="salasCuenta" class="nota"></span></div>
@@ -278,16 +283,46 @@
   </div>
   <div id="salasCerrar" class="pill">cerrar</div>
 </div>
+<div id="comPanel" class="hoja" style="display:none">
+  <div class="fila"><div class="tit">dejar un comentario</div><span id="comComo" class="nota"></span></div>
+  <textarea id="comTexto" class="campo" placeholder="qué pasó, qué te molesta, qué cambiarías…" maxlength="4000"></textarea>
+  <div id="comFotos"></div>
+  <div class="fila"><div id="comMasFoto" class="pill">+ foto</div><span class="nota">la primera es una captura del juego (sacala con ✕ si no querés)</span></div>
+  <input id="comArchivo" type="file" accept="image/*" multiple class="oculto">
+  <div class="nota">se manda también la versión y el registro técnico del juego (no tus fotos del museo).</div>
+  <div class="fila"><div id="comMandar" class="pill blanco">mandar</div><div id="comCerrar" class="pill">cerrar</div></div>
+  <div id="comEstado" class="nota"></div>
+</div>
+<div id="cuentaPanel" class="hoja" style="display:none">
+  <div class="tit">cuenta de admin</div>
+  <div id="cuentaFuera">
+    <div class="fila" style="flex-direction:column;align-items:stretch">
+      <input id="cuentaMail" class="campo" type="email" placeholder="email" autocomplete="username" autocapitalize="off" spellcheck="false">
+      <input id="cuentaPass" class="campo" type="password" placeholder="contraseña" autocomplete="current-password">
+    </div>
+    <div class="fila" style="margin-top:10px"><div id="cuentaEntrar" class="pill blanco">entrar</div><div id="cuentaCrear" class="pill">crear cuenta</div></div>
+    <div class="nota" style="margin-top:8px">solo para José: da acceso a todas las salas y marca tus comentarios como tuyos.</div>
+  </div>
+  <div id="cuentaDentro" style="display:none">
+    <div class="nota">entraste como <b id="cuentaEmail"></b></div>
+    <div class="nota">tu id: <span id="cuentaUid"></span></div>
+    <div class="fila" style="margin-top:10px"><div id="cuentaSalas" class="pill blanco">ver todas las salas</div><div id="cuentaSalir" class="pill">salir</div></div>
+  </div>
+  <div id="cuentaError" class="nota"></div>
+  <div id="cuentaCerrar" class="pill">cerrar</div>
+</div>
 <div id="diag" style="display:none">
   <div class="nota" style="font-size:13px;color:rgba(255,255,255,0.6)">registro (lo más nuevo arriba) · copialo y pegalo en el chat</div>
   <textarea id="diagTxt" readonly></textarea>
   <div class="fila"><div id="diagCopiar" class="pill">copiar</div><div id="diagBorrar" class="pill">borrar</div><div id="diagCerrar" class="pill">cerrar</div></div>
 </div>
 <script src="diag.js"></script>
+<script src="cuenta.js"></script>
 <script src="sala.js"></script>
 <script src="rtc.js"></script>
 <script src="personaje.js"></script>
 <script src="voz.js"></script>
+<script src="comentarios.js"></script>
 <script src="game.js"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.2';
+const VERSION = 'v10.3';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -846,7 +846,7 @@ joyEl.addEventListener('pointercancel', joyEnd);
 const opcionesEl = $('opciones');
 $('menuBtn').addEventListener('click', () => {
   const abrir = opcionesEl.style.display === 'none';
-  for (const id of ['salaPanel', 'fovPanel', 'salasPanel']) $(id).style.display = 'none';
+  for (const id of ['salaPanel', 'fovPanel', 'salasPanel', 'comPanel', 'cuentaPanel']) $(id).style.display = 'none';
   if (pjVista) pjCerrar();
   opcionesEl.style.display = abrir ? '' : 'none';
   $('menuBtn').classList.toggle('on', abrir);
@@ -895,7 +895,7 @@ window.addEventListener('keydown', e => {
   else if (c === 'Escape') {
     if (held) click(cancelBtn);
     else {
-      for (const id of ['salaPanel', 'fovPanel', 'diag', 'salasPanel', 'opciones']) { const el = $(id); if (el) el.style.display = 'none'; }
+      for (const id of ['salaPanel', 'fovPanel', 'diag', 'salasPanel', 'opciones', 'comPanel', 'cuentaPanel']) { const el = $(id); if (el) el.style.display = 'none'; }
       if (pjVista) pjCerrar();
       $('menuBtn').classList.remove('on'); fovBtn.classList.remove('on');
     }
@@ -1045,7 +1045,10 @@ function frame(now) {
   if (++cuadros === 60) diag('dibujando ok · ' + estadoTxt());
   if (!Number.isFinite(yawOff) || !Number.isFinite(pitchOff)) { diagUna('mirada rota → la reseteo'); yawOff = 0; pitchOff = 0; }
   if (!gl.isContextLost()) {
-    try { draw(now); pantallaOk(now); } catch (e) { showHint('error: ' + e.message); diagUna('ERROR dibujando: ' + e.message + ' ' + ((e.stack || '').split('\n')[1] || '').trim()); }
+    try {
+      draw(now); pantallaOk(now);
+      if (comCapturaPedida) { const f = comCapturaPedida; comCapturaPedida = null; let u = null; try { u = canvas.toDataURL('image/jpeg', 0.85); } catch (e) {} f(u); }
+    } catch (e) { showHint('error: ' + e.message); diagUna('ERROR dibujando: ' + e.message + ' ' + ((e.stack || '').split('\n')[1] || '').trim()); }
   }
   requestAnimationFrame(frame);
 }
@@ -1201,7 +1204,9 @@ async function checkUpdate() {
   try {
     const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
     const mm = (await r.text()).match(/const VERSION = '([^']+)'/);
-    if (mm && mm[1] !== VERSION && touches.size === 0 && !held) {
+    // no recargar con dedos en pantalla, una foto en la mano, ni escribiendo un comentario o la cuenta (se perdería)
+    const ocupado = escribiendo() || ['comPanel', 'cuentaPanel'].some(id => $(id).style.display !== 'none') || comMandando;
+    if (mm && mm[1] !== VERSION && touches.size === 0 && !held && !ocupado) {
       if (sessionStorage.getItem('recargado') === mm[1]) return;
       sessionStorage.setItem('recargado', mm[1]);
       location.reload();

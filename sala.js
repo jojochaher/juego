@@ -4,7 +4,8 @@
 // encontrar, leer ni escribir (ver reglas en firebase-rules.json). La contraseña nunca sale del celu.
 // Se carga ANTES que game.js: acá solo se definen funciones; usan cosas de game.js recién cuando se llaman.
 
-const SALA_DB = new URLSearchParams(location.search).get('db') || 'https://juego-dd2eb-default-rtdb.firebaseio.com';
+// ?db= solo para las pruebas (el mock en localhost): un link con otra base no puede llevarse fotos ni el token de admin
+const SALA_DB = (d => d && /^http:\/\/localhost(:\d+)?$/.test(d) ? d : 'https://juego-dd2eb-default-rtdb.firebaseio.com')(new URLSearchParams(location.search).get('db'));
 const SALA_IMG_MAX = 768;          // las fotos compartidas se suben a 768px (~100KB)
 
 const sala = {
@@ -385,7 +386,7 @@ function salaRecordar(h, p) {
   salaRegistroGuardar(l);
 }
 (() => {   // la sala de antes del registro
-  try { const o = JSON.parse(localStorage.getItem('salaPass') || 'null'); if (o && !salaRegistro().some(x => x.h === o.h)) { const l = salaRegistro(); l.push({ h: o.h, p: o.p, t: Date.now() }); salaRegistroGuardar(l); } } catch (e) {}
+  try { const o = JSON.parse(localStorage.getItem('salaPass') || 'null'); if (o && o.p != null && !salaRegistro().some(x => x.h === o.h)) { const l = salaRegistro(); l.push({ h: o.h, p: o.p, t: Date.now() }); salaRegistroGuardar(l); } } catch (e) {}
 })();
 const salaUrlDe = (h, p) => `${SALA_DB}/salas/${h}/${p}.json`;
 const salasPanel = document.getElementById('salasPanel');
@@ -393,9 +394,12 @@ function hace(t) {
   const m = (Date.now() - (t || 0)) / 60000;
   return m < 2 ? 'recién' : m < 60 ? `hace ${Math.round(m)} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d`;
 }
-function salasAbrir() {
+// salasTodas: modo admin (José con su cuenta): todas las salas que existen, no solo las de este dispositivo
+let salasTodas = false;
+function salasAbrir(todas) {
   document.getElementById('salaPanel').style.display = 'none';
   salasPanel.style.display = '';
+  salasTodas = todas === true && cuentaAdmin();
   salasLista();
 }
 function salasLista() {
@@ -403,6 +407,10 @@ function salasLista() {
   const lista = document.getElementById('salasLista');
   lista.style.display = '';
   lista.innerHTML = '';
+  document.getElementById('salasSub').textContent = salasTodas ? '(todas las que existen · admin)' : '(las que usaste en este dispositivo)';
+  document.getElementById('salasModo').style.display = cuentaAdmin() ? '' : 'none';
+  document.getElementById('salasModo').textContent = salasTodas ? 'solo las mías' : 'ver todas';
+  if (salasTodas) { salasListaTodas(lista); return; }
   const l = salaRegistro().sort((a, b) => (b.t || 0) - (a.t || 0));
   if (!l.length) { lista.innerHTML = '<div class="nota">todavía no entraste a ninguna sala desde acá.</div>'; return; }
   for (const e of l) {
@@ -420,8 +428,69 @@ function salasLista() {
     lista.append(fila);
   }
 }
+// todas las salas (admin): la lista sale de la base con el token de José; de las que no conozco
+// la contraseña muestro el principio del hash
+let salasGen = 0;
+async function salasListaTodas(lista) {
+  const gen = ++salasGen;
+  const nota = document.createElement('div'); nota.className = 'nota'; nota.textContent = 'cargando…'; lista.append(nota);
+  let hs;
+  try {
+    const tok = await cuentaToken();
+    if (!tok) throw new Error('sin cuenta');
+    const r = await fetch(`${SALA_DB}/salas.json?shallow=true&auth=${encodeURIComponent(tok)}`);
+    if (!r.ok) throw new Error(r.status === 401 ? 'la base no te deja (¿falta tu id en las reglas?)' : 'error ' + r.status);
+    hs = Object.keys((await r.json()) || {});
+  } catch (err) { nota.textContent = 'no pude traer las salas: ' + err.message; return; }
+  if (gen !== salasGen || !salasTodas || salasViendo) return;
+  const conocidas = new Map(salaRegistro().map(x => [x.h, x]));
+  nota.textContent = hs.length ? `${hs.length} sala${hs.length === 1 ? '' : 's'}. las que no tienen nombre son de contraseñas que no usaste acá.` : 'no hay ninguna sala.';
+  const filas = [];
+  for (const h of hs) {
+    const k = conocidas.get(h);
+    const e = { h, p: k ? k.p : null, t: k && k.t };
+    const fila = document.createElement('div'); fila.className = 'salaFila';
+    const nom = document.createElement('div'); nom.className = 'nom'; nom.textContent = e.p != null ? e.p : 'sin nombre · ' + h.slice(0, 8);
+    if (e.p == null) nom.style.opacity = 0.6;
+    const cuantas = document.createElement('div'); cuantas.className = 'nota'; cuantas.textContent = sala.active && sala.hash === h ? 'estás acá' : '…';
+    const ver = document.createElement('div'); ver.className = 'pill'; ver.textContent = 'ver';
+    ver.addEventListener('click', () => salasDetalle(e));
+    fila.append(nom, cuantas, ver); lista.append(fila); filas.push([h, cuantas]);
+  }
+  if (hs.length) {
+    const todas = document.createElement('div'); todas.className = 'pill rojo'; todas.textContent = 'borrar todas las salas';
+    todas.addEventListener('click', async () => {
+      if (!todas.dataset.seguro) {
+        todas.dataset.seguro = '1'; todas.textContent = '¿seguro? borra las fotos de TODAS · tocá de nuevo';
+        setTimeout(() => { todas.dataset.seguro = ''; todas.textContent = 'borrar todas las salas'; }, 4000);
+        return;
+      }
+      todas.textContent = 'borrando…';
+      try {
+        const tok = await cuentaToken();
+        if (!tok) throw new Error('tu cuenta no respondió, volvé a entrar');
+        const r = await fetch(`${SALA_DB}/salas.json?auth=${encodeURIComponent(tok)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error('firebase ' + r.status);
+        diag('sala: admin borró todas (' + hs.length + ')');
+        showHint('borradas todas las salas');
+        if (sala.active) { sala.ultimoEstado = ''; salaEnviarPresencia(); }   // vuelvo a avisar que estoy
+        salasLista();
+      } catch (err) { todas.textContent = 'borrar todas las salas'; showHint('no se pudieron borrar: ' + err.message); }
+    });
+    lista.append(todas);
+  }
+  // cuántas fotos tiene cada una (de a una, para no tirar 100 pedidos juntos)
+  for (const [h, el] of filas) {
+    if (gen !== salasGen || !salasTodas || salasPanel.style.display === 'none' || !el.isConnected) return;
+    if (sala.active && sala.hash === h) continue;
+    try {
+      const n = Object.keys((await (await fetch(salaUrlDe(h, 'poses') + '?shallow=true')).json()) || {}).length;
+      el.textContent = n ? `${n} foto${n === 1 ? '' : 's'}` : 'vacía';
+    } catch (err) { el.textContent = '?'; }
+  }
+}
 async function salasEntrarA(e) {
-  try { localStorage.setItem('salaPass', JSON.stringify({ h: e.h, p: e.p })); } catch (err) {}
+  try { if (e.p != null) localStorage.setItem('salaPass', JSON.stringify({ h: e.h, p: e.p })); else localStorage.removeItem('salaPass'); } catch (err) {}
   salasPanel.style.display = 'none';
   await salaEntrar(e.h);
 }
@@ -430,8 +499,9 @@ async function salasDetalle(e) {
   salasViendo = e;
   document.getElementById('salasLista').style.display = 'none';
   document.getElementById('salasDetalle').style.display = '';
-  document.getElementById('salasNombre').textContent = e.p;
+  document.getElementById('salasNombre').textContent = e.p != null ? e.p : 'sin nombre · ' + e.h.slice(0, 8);
   document.getElementById('salasEntrar').style.display = sala.active && sala.hash === e.h ? 'none' : '';
+  document.getElementById('salasOlvidar').style.display = salaRegistro().some(x => x.h === e.h) ? '' : 'none';
   const borrar = document.getElementById('salasBorrar'); borrar.textContent = 'borrar sala'; borrar.dataset.seguro = '';
   const fotos = document.getElementById('salasFotos'); fotos.innerHTML = '';
   const cuenta = document.getElementById('salasCuenta'); cuenta.textContent = ' · cargando…';
@@ -487,15 +557,22 @@ document.getElementById('salasBorrar').addEventListener('click', async () => {
   }
   bt.textContent = 'borrando…';
   try {
-    await fetch(salaUrlDe(e.h, 'poses'), { method: 'DELETE' });
-    await fetch(salaUrlDe(e.h, 'imgs'), { method: 'DELETE' });
+    const tok = salasTodas && !(sala.active && sala.hash === e.h) ? await cuentaToken() : null;
+    if (tok) {   // admin: la sala entera (también la gente y las señales de video que quedaron colgadas)
+      const r = await fetch(`${SALA_DB}/salas/${e.h}.json?auth=${encodeURIComponent(tok)}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('firebase ' + r.status);
+    } else {
+      await fetch(salaUrlDe(e.h, 'poses'), { method: 'DELETE' });
+      await fetch(salaUrlDe(e.h, 'imgs'), { method: 'DELETE' });
+    }
     diag('sala: borrada ' + e.h.slice(0, 6));
     if (!(sala.active && sala.hash === e.h)) salaRegistroGuardar(salaRegistro().filter(x => x.h !== e.h));
     showHint('sala borrada');
     salasViendo = null; salasLista();
   } catch (err) { bt.textContent = 'borrar sala'; showHint('no se pudo borrar la sala'); }
 });
-for (const el of document.querySelectorAll('.abrirSalas')) el.addEventListener('click', salasAbrir);
+for (const el of document.querySelectorAll('.abrirSalas')) el.addEventListener('click', () => salasAbrir());
+document.getElementById('salasModo').addEventListener('click', () => { salasTodas = !salasTodas && cuentaAdmin(); salasViendo = null; salasLista(); });
 
 // ---------- panel de la sala ----------
 const salaBtn = document.getElementById('salaBtn'), salaPanel = document.getElementById('salaPanel');

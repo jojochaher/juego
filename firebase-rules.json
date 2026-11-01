@@ -1,6 +1,8 @@
 {
   "rules": {
     "salas": {
+      ".read": "auth != null && auth.uid === 'PENDIENTE'",
+      ".write": "auth != null && auth.uid === 'PENDIENTE'",
       "$sala": {
         ".read": "$sala.length === 64",
         ".write": "$sala.length === 64",
@@ -8,6 +10,23 @@
         "imgs": { "$id": { ".validate": "newData.isString() && newData.val().length < 400000" } },
         "gente": { "$id": { ".validate": "newData.hasChildren(['p', 't'])" } },
         "rtc": { "$para": { "$de": { ".validate": "newData.hasChildren(['type', 'sdp'])" } } },
+        "$otro": { ".validate": false }
+      }
+    },
+    "comentarios": {
+      ".read": "auth != null && auth.uid === 'PENDIENTE'",
+      ".write": "auth != null && auth.uid === 'PENDIENTE'",
+      "$id": {
+        ".write": "!data.exists() && newData.exists()",
+        ".validate": "newData.hasChildren(['texto', 'autor', 'v', 't'])",
+        "texto": { ".validate": "newData.isString() && newData.val().length <= 4000" },
+        "autor": { ".validate": "newData.val() === 'otro' || (newData.val() === 'jose' && auth != null && auth.uid === 'PENDIENTE')" },
+        "v": { ".validate": "newData.isString() && newData.val().length < 20" },
+        "t": { ".validate": "newData.isNumber()" },
+        "registro": { ".validate": "newData.isString() && newData.val().length < 100000" },
+        "disp": { ".validate": "newData.isString() && newData.val().length < 300" },
+        "sala": { ".validate": "newData.isBoolean()" },
+        "fotos": { "$n": { ".validate": "$n.length === 1 && newData.isString() && newData.val().length < 700000" } },
         "$otro": { ".validate": false }
       }
     }
