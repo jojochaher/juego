@@ -88,20 +88,22 @@ function rtcSoltarCara() {
   const yo = document.getElementById('yoCara'); yo.srcObject = null; yo.style.display = 'none';
 }
 
-// por el video va tu cara o, con la cámara de fotos equipada, lo que estás encuadrando
-function rtcVideoPropio() {
-  if (rtc.cara) return rtc.cara.getVideoTracks()[0];
+// dos videos separados: el primero es tu cara, el segundo lo que encuadrás con la cámara de fotos
+// (separados para que nunca se mezclen: si no, la cabeza del otro podía quedar congelada con la cámara trasera)
+function rtcVideoVista() {
   const s = camOn && camReady && video.srcObject;
   const t = s && s.getVideoTracks()[0];
   return t && t.readyState === 'live' ? t : null;
 }
+const rtcVideos = pc => pc.getTransceivers().filter(t => t.receiver.track && t.receiver.track.kind === 'video');
 function rtcPonerPistas(p) {
+  const vids = rtcVideos(p.pc);
   for (const t of p.pc.getTransceivers()) {
     const kind = t.receiver.track && t.receiver.track.kind;
     if (!t.sender || t.stopped) continue;
     if (kind === 'audio') t.sender.replaceTrack(rtc.mic ? rtc.mic.getAudioTracks()[0] : null).catch(() => {});
     if (kind === 'video') {
-      const v = rtcVideoPropio();
+      const v = vids.indexOf(t) === 1 ? rtcVideoVista() : (rtc.cara ? rtc.cara.getVideoTracks()[0] : null);
       if (t.sender.track !== v) t.sender.replaceTrack(v).catch(() => {});
       try {   // liviano: la vista previa no necesita más
         const prm = t.sender.getParameters();
@@ -135,7 +137,7 @@ async function rtcNuevo(id) {
   const pc = new RTCPeerConnection({ iceServers: await rtcIceServers() });
   const p = { id, pc, faceOk: false };
   rtc.peers.set(id, p);
-  pc.ontrack = e => rtcPistaRemota(p, e.track);
+  pc.ontrack = e => rtcPistaRemota(p, e.track, e.transceiver);
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       if (rtc.peers.get(id) === p) { rtcCerrar(id); setTimeout(rtcSync, 3000); }
@@ -157,7 +159,8 @@ async function rtcLlamar(id) {
   const p = await rtcNuevo(id);
   p.llamo = true;
   p.pc.addTransceiver('audio', { direction: 'sendrecv' });
-  p.pc.addTransceiver('video', { direction: 'sendrecv' });
+  p.pc.addTransceiver('video', { direction: 'sendrecv' });   // cara
+  p.pc.addTransceiver('video', { direction: 'sendrecv' });   // lo que encuadra
   rtcPonerPistas(p);
   await p.pc.setLocalDescription(await p.pc.createOffer());
   const d = await rtcSdpCompleto(p.pc);
@@ -197,6 +200,7 @@ function rtcCerrar(id) {
   rtc.peers.delete(id);
   try { p.pc.close(); } catch (e) {}
   if (p.video) p.video.remove();
+  if (p.vistaV) p.vistaV.remove();
   if (p.audio) p.audio.remove();
   if (p.src) try { p.src.disconnect(); } catch (e) {}
   if (p.faceTex) gl.deleteTexture(p.faceTex);
@@ -204,12 +208,13 @@ function rtcCerrar(id) {
 }
 
 // ---------- lo que llega del otro ----------
-function rtcPistaRemota(p, track) {
+function rtcPistaRemota(p, track, tr) {
   const s = new MediaStream([track]);
-  track.onunmute = () => { const el = track.kind === 'video' ? p.video : p.audio; if (el && el.paused) el.play().catch(() => {}); };
+  const key = track.kind === 'audio' ? 'audio' : rtcVideos(p.pc).indexOf(tr) === 1 ? 'vistaV' : 'video';
+  track.onunmute = () => { const el = p[key]; if (el && el.paused) el.play().catch(() => {}); };
   if (track.kind === 'video') {
-    if (!p.video) { p.video = document.createElement('video'); p.video.playsInline = true; p.video.muted = true; p.video.className = 'oculto'; document.body.appendChild(p.video); }
-    p.video.srcObject = s; p.video.play().catch(() => {});
+    if (!p[key]) { const v = p[key] = document.createElement('video'); v.playsInline = true; v.muted = true; v.className = 'oculto'; document.body.appendChild(v); }
+    p[key].srcObject = s; p[key].play().catch(() => {});
   } else {
     // iOS: el audio remoto tiene que estar en un <audio> que reproduce (aunque sea mudo) para que WebAudio lo escuche
     if (!p.audio) { p.audio = document.createElement('audio'); p.audio.autoplay = true; p.audio.className = 'oculto'; document.body.appendChild(p.audio); }
@@ -237,7 +242,7 @@ function rtcAudio() {
 // iOS solo deja sonar audio después de un toque
 document.addEventListener('pointerdown', () => {
   if (rtc.ctx && rtc.ctx.state !== 'running') rtc.ctx.resume().catch(() => {});
-  for (const p of rtc.peers.values()) { if (p.audio && p.audio.paused) p.audio.play().catch(() => {}); if (p.video && p.video.paused) p.video.play().catch(() => {}); }
+  for (const p of rtc.peers.values()) { if (p.audio && p.audio.paused) p.audio.play().catch(() => {}); for (const v of [p.video, p.vistaV]) if (v && v.paused) v.play().catch(() => {}); }
 }, true);
 
 // sonido: el oído soy yo, la boca es la cabeza del otro
@@ -289,8 +294,8 @@ function rtcCara(id, congelar) {
 // lo que el otro está encuadrando con la cámara de fotos, como textura
 function rtcVista(id) {
   const p = rtc.peers.get(id);
-  if (!p || !p.video || p.video.readyState < 2 || !p.video.videoWidth) return null;
-  const v = p.video, k = Math.min(1, 320 / Math.max(v.videoWidth, v.videoHeight));
+  if (!p || !p.vistaV || p.vistaV.readyState < 2 || !p.vistaV.videoWidth) return null;
+  const v = p.vistaV, k = Math.min(1, 320 / Math.max(v.videoWidth, v.videoHeight));
   const w = Math.max(1, Math.round(v.videoWidth * k)), h = Math.max(1, Math.round(v.videoHeight * k));
   if (!p.vistaC) {
     p.vistaC = document.createElement('canvas'); p.vistaX = p.vistaC.getContext('2d');

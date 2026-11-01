@@ -135,6 +135,11 @@
     display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
   }
   #modes .pill { pointer-events: auto; }
+  #grilla {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(222px + env(safe-area-inset-bottom));
+    z-index: 3; font-size: 13px; padding: 6px 12px;
+  }
+  #grilla.on { background: rgba(255,255,255,0.9); color: #111; }
   #modes .pill.on { background: rgba(255,255,255,0.9); color: #111; }
   #cancel {
     right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
@@ -170,6 +175,7 @@
   <div class="pill" data-m="girar">girar</div>
   <div class="pill" id="reset" aria-label="restablecer">↺</div>
 </div>
+<div id="grilla" class="pill" style="display:none">grilla: no</div>
 <div id="equip" class="ctl" style="display:none" aria-label="equipar cámara"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
 <div id="unequip" class="ctl" style="display:none" aria-label="guardar cámara"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/><path d="M3 3l18 18" stroke-linecap="round"/></svg></div>
 <div id="fovPanel" style="display:none"><div id="fovTrack"><div id="fovKnob"></div></div><span id="fovVal"></span></div>

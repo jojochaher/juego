@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v7.2';
+const VERSION = 'v7.3';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -262,6 +262,43 @@ function worldPose(b, L) {
   return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice() };
 }
 
+// ---------- grilla: alinear lo que está en la mano ----------
+// de pie (o acostada si está casi horizontal), mirando en pasos de 45°, girada en pasos de 90°,
+// ancho en pasos de 10 cm y la esquina en la grilla de 10 cm (así los bordes se alinean entre fotos)
+const SNAP = 0.1, SNAP_YAW = Math.PI / 4;
+let grilla = false;
+try { grilla = localStorage.getItem('grilla') === '1'; } catch (e) {}
+const snapA = (a, k) => Math.round(a / k) * k;
+function snapPose(p) {
+  const up = [0, 1, 0];
+  let n = norm(cross(p.r, p.u)), u;
+  if (Math.abs(n[1]) > 0.7) {                       // acostada (piso o techo)
+    n = [0, n[1] > 0 ? 1 : -1, 0];
+    const a = snapA(Math.atan2(p.u[0], p.u[2]), SNAP_YAW);
+    u = [Math.sin(a), 0, Math.cos(a)];
+  } else {                                           // de pie
+    const a = snapA(Math.atan2(n[0], n[2]), SNAP_YAW);
+    n = [Math.sin(a), 0, Math.cos(a)];
+    const r0 = cross(up, n);
+    const t = snapA(Math.atan2(dot(p.u, r0), dot(p.u, up)), Math.PI / 2);
+    u = add(mul(up, Math.round(Math.cos(t))), mul(r0, Math.round(Math.sin(t))));
+  }
+  const r = cross(u, n);                             // así cross(r, u) = n (el lado de adelante no cambia)
+  const w = Math.max(SNAP, snapA(p.w, SNAP)), h = p.h * w / p.w;
+  const corner = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2)).map(v => Math.round(snapA(v, SNAP) * 1000) / 1000);
+  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
+}
+// dónde queda lo que tenés en la mano (con la grilla prendida, ya alineado)
+function heldPose(b) {
+  if (held.aim) return held.work;
+  const p = worldPose(b, held.L);
+  return grilla ? snapPose(p) : p;
+}
+function previewPose(b) {
+  const p = worldPose(b, preview);
+  return grilla ? snapPose(p) : p;
+}
+
 // operaciones sobre lo que está en la mano
 function scaleBy(L, k) {
   k = clamp(k, 0.02 / Math.min(L.w, L.h), 40 / Math.max(L.w, L.h));
@@ -371,7 +408,7 @@ function drop() {
   if (!held) return;
   cur();
   const w = held.work;
-  Object.assign(w, worldPose(basis(), held.L));
+  Object.assign(w, heldPose(basis()));
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
   if (sala.active) salaSavePose(w);
@@ -483,7 +520,7 @@ function setCam(on) {
 
 function shoot() {
   if (!camOn || !camReady || !video.videoWidth || held) return;
-  const pose = worldPose(basis(), preview);
+  const pose = previewPose(basis());
   const k = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
   const c = document.createElement('canvas');
   c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
@@ -521,6 +558,15 @@ for (const el of modesEl.querySelectorAll('[data-m]')) {
   el.addEventListener('click', () => { setMode(el.dataset.m); showHint(MODE_HINT[mode]); });
 }
 resetBtn.addEventListener('click', resetHeld);
+const grillaBtn = $('grilla');
+function paintGrilla() { grillaBtn.textContent = grilla ? 'grilla: sí' : 'grilla: no'; grillaBtn.classList.toggle('on', grilla); }
+grillaBtn.addEventListener('click', () => {
+  grilla = !grilla;
+  try { localStorage.setItem('grilla', grilla ? '1' : '0'); } catch (e) {}
+  paintGrilla(); buzz(8);
+  if (grilla) showHint('alineada: de pie, en pasos de 45° y 10 cm');
+});
+paintGrilla();
 
 let started = false;
 function ui() {
@@ -536,6 +582,7 @@ function ui() {
   show(gyroBtn, started && gyroMode);
   show(distEl, canEdit);
   show(modesEl, canEdit);
+  show(grillaBtn, canEdit);
   show(shootBtn, started && camUp && !holding);
   show(equipBtn, started && !camOn && !holding);
   show(unequipBtn, started && camOn && !holding);
@@ -819,11 +866,11 @@ function draw(now) {
 
   // en la mano
   if (held) {
-    drawFramed(held.aim ? held.work : worldPose(b, held.L), held.work.tex, [1, 1, 1]);
+    drawFramed(heldPose(b), held.work.tex, [1, 1, 1]);
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
-    drawFramed(worldPose(b, preview), videoTex, [1, 0.47, 0.31]);
+    drawFramed(previewPose(b), videoTex, [1, 0.47, 0.31]);
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)
@@ -869,6 +916,6 @@ window.__game = {
   pos, works, joy,
   get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
-  get gyroMode() { return gyroMode; }, get camReady() { return camReady; },
+  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, snapPose,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };

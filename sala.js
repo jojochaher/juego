@@ -210,10 +210,10 @@ function salaEnviarPresencia() {
     yaw: Math.round(heading(f) * 100) / 100,
     pitch: Math.round(Math.asin(clamp(f[1], -1, 1)) * 100) / 100,
     col: salaColor.map(v => Math.round(v * 100) / 100),
-    cam: camOn && camReady ? 1 : 0,
+    cam: camOn ? 1 : 0,          // apenas la equipás (antes de que abra): los demás congelan tu cara a tiempo
   };
   // lo que tengo en la mano (una foto agarrada o la vista previa de la cámara), para que los demás lo vean
-  const L = held ? (held.aim ? held.work : worldPose(basis(), held.L)) : (camOn && camReady ? worldPose(basis(), preview) : null);
+  const L = held ? heldPose(basis()) : (camOn && camReady ? previewPose(basis()) : null);
   if (L) {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
