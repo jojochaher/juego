@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.1';
+const VERSION = 'v10.2';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -332,16 +332,13 @@ function fisica(dt) {
 }
 
 // ---------- grilla: alinear lo que está en la mano ----------
-// de pie (o acostada si está casi horizontal), mirando en pasos de 45°, girada en pasos de 90°,
-// ancho en pasos de 10 cm y la esquina en la grilla de 10 cm (así los bordes se alinean entre fotos)
 const SNAP = 0.1, SNAP_YAW = Math.PI / 2;
 let grilla = false;
 try { grilla = localStorage.getItem('grilla') === '1'; } catch (e) {}
 const snapA = (a, k) => Math.round(a / k) * k;
-// grilla: de pie (o acostada si está casi horizontal), mirando en pasos de 90°, girada en pasos de 90°,
-// ancho en pasos de 10 cm, y la esquina de abajo a la izquierda en metros enteros en el piso (x, z: los puntitos)
-// y de a 10 cm en altura (si la altura también fuera de a metro, las fotos quedarían en el piso o a 1 m).
-// Una foto de pie queda sobre una línea de puntitos, con su borde izquierdo arriba de un puntito.
+// grilla (todo de a metro, como los puntitos del piso): de pie (o acostada si está casi horizontal), mirando en
+// pasos de 90°, girada en pasos de 90°, ancho en metros enteros (1 m mínimo; el alto sigue la proporción de la foto)
+// y la esquina de abajo a la izquierda en un punto de la grilla de 1 m (x, y, z enteros).
 function snapPose(p) {
   const up = [0, 1, 0];
   let n = norm(cross(p.r, p.u)), u;
@@ -357,61 +354,47 @@ function snapPose(p) {
     u = add(mul(up, Math.round(Math.cos(t))), mul(r0, Math.round(Math.sin(t))));
   }
   const r = cross(u, n);                             // así cross(r, u) = n (el lado de adelante no cambia)
-  const w = Math.max(SNAP, snapA(p.w, SNAP)), h = p.h * w / p.w;
+  const w = Math.max(1, Math.round(p.w)), h = p.h * w / p.w;
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
-  const corner = [Math.round(c0[0]), Math.round(snapA(c0[1], SNAP) * 1000) / 1000, Math.round(c0[2])];
+  const corner = c0.map(Math.round);
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
 }
-// guías: muestran contra qué se alinea lo que tenés en la mano.
-// - la línea de puntitos del piso sobre la que queda (de color, hasta 3 m a cada lado)
-// - líneas que bajan de las esquinas de abajo hasta el piso (la izquierda cae justo en un puntito)
-// - en el plano de la foto, una línea vertical por cada metro entero (las otras columnas de puntitos)
-// Si está acostada: las líneas del piso por debajo de sus bordes y las que bajan desde sus esquinas.
+// guías: la grilla de 1 m en 3D alrededor de lo que tenés en la mano (líneas en x, en z y verticales por cada punto
+// entero), que se desvanece a ~2 m de la foto; las tres que pasan por su esquina, más marcadas.
 function guiasGrilla(p, col) {
-  const d = Math.max(0.2, len(sub(p.c, pos)));
-  const grosor = px => metersPerPx(d) * px;
-  const up = [0, 1, 0];
-  const n = norm(cross(p.r, p.u));
   const esquina = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
+  const otra = add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h));
+  const lo = [0, 1, 2].map(i => Math.min(esquina[i], otra[i])), hi = [0, 1, 2].map(i => Math.max(esquina[i], otra[i]));
+  const ESP = 2;                                      // hasta dónde llegan las guías alrededor de la foto
+  const desde = [Math.floor(lo[0]) - ESP, 0, Math.floor(lo[2]) - ESP];
+  const hasta = [Math.ceil(hi[0]) + ESP, Math.max(2, Math.ceil(hi[1]) + 1), Math.ceil(hi[2]) + ESP];
+  // distancia de un punto a la caja de la foto, en las coordenadas que importan
+  const fuera = (q, ejes) => Math.hypot(...ejes.map(i => Math.max(0, lo[i] - q[i], q[i] - hi[i])));
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
-  const segmento = (a, b, ancho, alfa, color = col) => {   // línea de a a b, de frente a la cámara
-    const dir = sub(b, a), largo = len(dir);
-    if (largo < 1e-4) return;
+  const segmento = (a, b, px, alfa) => {
+    if (alfa <= 0.01) return;
+    const dir = sub(b, a), largo = len(dir), mid = add(a, mul(dir, 0.5));
     const t = mul(dir, 1 / largo);
-    let lado = cross(t, sub(add(a, mul(dir, 0.5)), pos));
-    if (len(lado) < 1e-6) lado = cross(t, up);
-    drawQuad(scratch, quadData(add(a, mul(dir, 0.5)), norm(lado), t, ancho, largo), white, color, alfa);
+    let lado = cross(t, sub(mid, pos));
+    if (len(lado) < 1e-6) lado = cross(t, [0, 1, 0]);
+    drawQuad(scratch, quadData(mid, norm(lado), t, metersPerPx(Math.max(0.3, len(sub(mid, pos)))) * px, largo), white, col, alfa);
   };
-  const piso = q => [q[0], 0.003, q[2]];
-  const horiz = Math.abs(n[1]) > 0.7;
-  // esquinas de abajo (la de la izquierda es la que va a los puntitos) y el eje horizontal de la foto
-  const ejeH = Math.abs(p.r[1]) < 0.5 ? p.r : p.u;
-  const tamH = ejeH === p.r ? p.w : p.h;
-  const esqs = horiz
-    ? [esquina, add(esquina, mul(p.r, p.w)), add(esquina, mul(p.u, p.h)), add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h))]
-    : [esquina, add(esquina, mul(ejeH, tamH))];
-  // bajadas al piso
-  for (const [k, q] of esqs.entries()) segmento(piso(q), q, grosor(k === 0 ? 2.2 : 1.4), k === 0 ? 0.85 : 0.5);
-  if (!horiz) {
-    // la línea de puntitos donde se apoya la pared
-    const a = piso(sub(esquina, mul(ejeH, 3))), b = piso(add(esquina, mul(ejeH, tamH + 3)));
-    segmento(a, b, grosor(2.2), 0.7);
-    // columnas de metros enteros en el plano de la foto, cerca
-    const alto = Math.max(2.4, esquina[1] + p.h + 0.4);
-    for (let k = -2; k <= Math.ceil(tamH) + 2; k++) {
-      const base = piso(add(esquina, mul(ejeH, k)));
-      const fuera = k < 0 ? -k : Math.max(0, k - tamH);
-      segmento(base, add(base, [0, alto, 0]), grosor(1.2), k === 0 ? 0 : 0.22 * (1 - fuera / 3));
+  const esq = esquina.map(Math.round);
+  const alfaDe = d => 0.32 * (1 - d / (ESP + 0.3));
+  for (let y = desde[1]; y <= hasta[1]; y++) {
+    for (let z = desde[2]; z <= hasta[2]; z++) {          // líneas en x
+      const marca = y === esq[1] && z === esq[2];
+      segmento([desde[0], y, z], [hasta[0], y, z], marca ? 2.4 : 1.2, marca ? 0.85 : alfaDe(fuera([0, y, z], [1, 2])));
     }
-  } else {
-    // las dos líneas del piso que pasan por los bordes de la foto
-    for (const [eje, tam, otro, tamO] of [[p.r, p.w, p.u, p.h], [p.u, p.h, p.r, p.w]]) {
-      for (const off of [0, tamO]) {
-        const a = piso(add(sub(esquina, mul(eje, 2)), mul(otro, off))), b = piso(add(add(esquina, mul(eje, tam + 2)), mul(otro, off)));
-        segmento(a, b, grosor(1.6), off === 0 ? 0.6 : 0.35);
-      }
+    for (let x = desde[0]; x <= hasta[0]; x++) {          // líneas en z
+      const marca = y === esq[1] && x === esq[0];
+      segmento([x, y, desde[2]], [x, y, hasta[2]], marca ? 2.4 : 1.2, marca ? 0.85 : alfaDe(fuera([x, y, 0], [0, 1])));
     }
+  }
+  for (let x = desde[0]; x <= hasta[0]; x++) for (let z = desde[2]; z <= hasta[2]; z++) {   // verticales
+    const marca = x === esq[0] && z === esq[2];
+    segmento([x, 0, z], [x, hasta[1], z], marca ? 2.4 : 1.2, marca ? 0.85 : alfaDe(fuera([x, 0, z], [0, 2])));
   }
   gl.depthMask(true);
   gl.disable(gl.BLEND);
@@ -721,7 +704,7 @@ grillaBtn.addEventListener('click', () => {
   grilla = !grilla;
   try { localStorage.setItem('grilla', grilla ? '1' : '0'); } catch (e) {}
   paintGrilla(); buzz(8);
-  if (grilla) showHint('alineada a los puntitos del piso: en pasos de 90° y de a metro');
+  if (grilla) showHint('todo de a metro, como los puntitos del piso: posición, altura, tamaño y giros de 90°');
 });
 paintGrilla();
 
