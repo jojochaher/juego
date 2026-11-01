@@ -47,7 +47,12 @@ const mock = require('./mockdb.js');
     fondo: async pg => { await setHidden(pg, true); await pg.waitForTimeout(500 + rnd() * 2500); await setHidden(pg, false); },
     recargar: async pg => { await pg.reload(); await arrancar(pg); },
     webgl: async pg => { await pg.evaluate(() => gl.getExtension('WEBGL_lose_context').loseContext()); await pg.waitForTimeout(3500); await arrancar(pg); },
-    mic: async pg => { await pg.tap(pick(['#micBtn', '#caraBtn'])).catch(() => {}); },
+    mic: async pg => {
+      const b = pick(['#micBtn', '#caraBtn']);
+      if (b === '#caraBtn') await pg.evaluate(() => { if (document.getElementById('opciones').style.display === 'none') document.getElementById('menuBtn').click(); });
+      await pg.tap(b, { timeout: 3000 }).catch(() => {});
+      await pg.evaluate(() => { document.getElementById('opciones').style.display = 'none'; });
+    },
   };
   const pesos = { mover: 4, mirar: 3, camara: 2, foto: 2, agarrar: 2, salirEntrar: 2, fondo: 2, recargar: 1, webgl: 1, mic: 1 };
   const bolsa = Object.entries(pesos).flatMap(([k, n]) => Array(n).fill(k));
@@ -68,7 +73,7 @@ const mock = require('./mockdb.js');
     if (await vis(pg, '#salaPanel')) await pg.tap('#salaBtn');
     if (!(await pg.evaluate(() => __game.sala.active))) { await pg.tap('#salaBtn'); await pg.fill('#salaPass', 'museo de caos'); await pg.tap('#salaEntrar'); }
     if (await vis(pg, '#unequip')) await pg.tap('#unequip');
-    if (/no/.test(await pg.textContent('#caraBtn'))) await pg.tap('#caraBtn');
+    if (/no/.test(await pg.textContent('#caraBtn'))) await pg.evaluate(() => document.getElementById('caraBtn').click());
   }
   await J[0].waitForTimeout(12000);
   const ids = await Promise.all(J.map(pg => pg.evaluate(() => __game.salaYo)));

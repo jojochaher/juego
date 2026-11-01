@@ -50,7 +50,7 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
   // inicio
   await pg.evaluate(() => { __game.pos[0] = 6; __game.pos[2] = -2.2; __game.pos[1] = 2.5; });
   await pg.waitForTimeout(300);
-  await pg.tap('#home'); await pg.waitForTimeout(300);
+  await pg.evaluate(() => { if (document.getElementById('opciones').style.display === 'none') document.getElementById('menuBtn').click(); }); await pg.tap('#home'); await pg.waitForTimeout(300);
   ok('inicio vuelve al piso', Math.abs((await P())[1] - 1.6) < 0.02);
   console.log('errores', pg.errs);
   await b.close(); web.close(); process.exit(0);

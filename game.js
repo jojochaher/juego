@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v9.2';
+const VERSION = 'v10';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -24,7 +24,8 @@ const FOV_MIN = 5, FOV_MAX = 170;          // campo horizontal en grados (menú 
 let fovDeg = 50;
 try { const f = +localStorage.getItem('fov'); if (f >= FOV_MIN && f <= FOV_MAX) fovDeg = f; } catch (e) {}
 let FOVX = fovDeg * Math.PI / 180;
-const MOVE = 1.6;                 // m/s con el joystick a fondo
+const MOVE = 1.6;
+let corriendo = 0, corriendoT = 0;   // aceleración al mantener el joystick a fondo                 // m/s con el joystick a fondo
 const LOOK = 0.0045;              // radianes por px de arrastre
 const DIST_MIN = 0.3, DIST_MAX = 12;
 const OUTLINE_PX = 3;             // grosor del marco, en px de pantalla
@@ -356,6 +357,40 @@ function snapPose(p) {
   const corner = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2)).map(v => Math.round(snapA(v, SNAP) * 1000) / 1000);
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
 }
+// guías: la grilla de 10 cm dibujada en el plano de lo que tenés en la mano, que se desvanece lejos de la foto
+// (líneas cada 50 cm más marcadas). Así se ve dónde va a caer y contra qué se alinea.
+const GUIA_MARGEN = 0.45;
+function guiasGrilla(p, col) {
+  const d = Math.max(0.2, len(sub(p.c, pos)));
+  const grosor = metersPerPx(d) * 1.4;
+  let n = norm(cross(p.r, p.u));
+  if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);
+  const atras = mul(n, 0.003 * d);                         // apenas detrás de la foto: la foto tapa sus líneas
+  const esquina = add(sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2)), atras);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  const linea = (eje, otro, t, largo, desde, alfa) => {   // línea paralela a "otro", a distancia t sobre "eje"
+    const centro = add(add(esquina, mul(eje, t)), mul(otro, desde + largo / 2));
+    const [w, h] = eje === p.r ? [grosor, largo] : [largo, grosor];
+    drawQuad(scratch, quadData(centro, p.r, p.u, w, h), white, col, alfa);
+  };
+  const cada = Math.max(p.w, p.h) > 1.5 ? 5 : 1;   // foto grande: solo las líneas de 50 cm (si no, son cientos por cuadro)
+  const tramos = (tam) => { const a = []; for (let k = -Math.round(GUIA_MARGEN / SNAP); k <= Math.round((tam + GUIA_MARGEN) / SNAP); k++) if (k % cada === 0) a.push(k); return a; };
+  for (const [eje, otro, tam, tamOtro] of [[p.r, p.u, p.w, p.h], [p.u, p.r, p.h, p.w]]) {
+    for (const k of tramos(tam)) {
+      const t = k * SNAP;
+      const fuera = t < 0 ? -t : t > tam ? t - tam : 0;      // cuánto se aleja de la foto
+      if (fuera > GUIA_MARGEN) continue;
+      const mayor = Math.round(t / SNAP) % 5 === 0;
+      const alfa = (mayor ? 0.38 : 0.16) * (1 - fuera / GUIA_MARGEN);
+      const extra = GUIA_MARGEN - fuera;                      // las líneas lejanas son más cortas
+      linea(eje, otro, t, tamOtro + 2 * extra, -extra, alfa);
+    }
+  }
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
 // dónde queda lo que tenés en la mano (con la grilla prendida, ya alineado)
 function heldPose(b) {
   if (held.aim) return held.work;
@@ -465,7 +500,7 @@ function stepAim(dt) {
   pitchOff = clamp(pitchOff + ee * k, -1.4, 1.4);
   if ((Math.abs(eh) < 0.002 && Math.abs(ee) < 0.002) || a.t > 0.9) finishAim();
 }
-function releaseHold() { held = null; setMode('mover'); ui(); }
+function releaseHold() { held = null; setMode('mover'); if (ajustando) setAjustar(false); ui(); }
 function clearWorks() {
   held = null;
   for (const w of works) { gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
@@ -639,12 +674,23 @@ function setMode(m) {
   mode = m;
   for (const el of modesEl.querySelectorAll('[data-m]')) el.classList.toggle('on', el.dataset.m === m);
 }
+// modos de ajuste: tocar uno lo activa; tocar el activo vuelve a "mover" (el normal)
 for (const el of modesEl.querySelectorAll('[data-m]')) {
-  el.addEventListener('click', () => { setMode(el.dataset.m); showHint(MODE_HINT[mode]); });
+  el.addEventListener('click', () => { const m = mode === el.dataset.m ? 'mover' : el.dataset.m; setMode(m); showHint(MODE_HINT[m]); });
 }
+const ajustarBtn = $('ajustar');
+let ajustando = false;
+function setAjustar(on) {
+  ajustando = on;
+  if (!on && mode !== 'mover') setMode('mover');
+  ajustarBtn.classList.toggle('on', on);
+  ajustarBtn.textContent = on ? 'ajustar ▴' : 'ajustar ▾';
+  ui();
+}
+ajustarBtn.addEventListener('click', () => setAjustar(!ajustando));
 resetBtn.addEventListener('click', resetHeld);
 const grillaBtn = $('grilla');
-function paintGrilla() { grillaBtn.textContent = grilla ? 'grilla: sí' : 'grilla: no'; grillaBtn.classList.toggle('on', grilla); }
+function paintGrilla() { grillaBtn.textContent = grilla ? '▦ grilla' : '▦ grilla: no'; grillaBtn.classList.toggle('on', grilla); }
 grillaBtn.addEventListener('click', () => {
   grilla = !grilla;
   try { localStorage.setItem('grilla', grilla ? '1' : '0'); } catch (e) {}
@@ -658,16 +704,15 @@ function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
   const holding = !!held, camUp = camOn && camReady, canEdit = started && (holding || camUp);
   show(joyEl, started && TACTIL);
-  show(invEl, started);
-  show(homeBtn, started);
+  show($('menuBtn'), started);
   show($('salaBtn'), started);
   show($('micBtn'), started && sala.active);
-  show($('caraBtn'), started && sala.active);
-  show($('fov'), started);
-  show(gyroBtn, started && gyroMode);
+  show($('caraBtn'), sala.active);
+  show(gyroBtn, gyroMode);
+  show($('opcAtajos'), !TACTIL);
   show(distEl, canEdit);
-  show(modesEl, canEdit);
-  show(grillaBtn, canEdit);
+  show($('edicion'), canEdit);
+  show(modesEl, canEdit && ajustando);
   show(shootBtn, started && camUp && !holding);
   show(equipBtn, started && !camOn && !holding);
   show(unequipBtn, started && camOn && !holding);
@@ -696,7 +741,7 @@ paintInv();
 // ---------- campo de visión ----------
 const fovBtn = $('fov'), fovPanel = $('fovPanel'), fovTrack = $('fovTrack'), fovKnob = $('fovKnob'), fovVal = $('fovVal');
 function paintFov() {
-  fovBtn.textContent = 'fov';
+  fovBtn.textContent = 'campo de visión';
   fovVal.textContent = fovDeg + '°';
   fovKnob.style.left = (fovDeg - FOV_MIN) / (FOV_MAX - FOV_MIN) * 100 + '%';
 }
@@ -788,6 +833,33 @@ joyEl.addEventListener('pointermove', e => { if (e.pointerId === joy.id) joyUpda
 joyEl.addEventListener('pointerup', joyEnd);
 joyEl.addEventListener('pointercancel', joyEnd);
 
+// ---------- menú de opciones (☰): lo que no hace falta tener siempre a la vista ----------
+const opcionesEl = $('opciones');
+$('menuBtn').addEventListener('click', () => {
+  const abrir = opcionesEl.style.display === 'none';
+  for (const id of ['salaPanel', 'fovPanel', 'salasPanel']) $(id).style.display = 'none';
+  if (pjVista) pjCerrar();
+  opcionesEl.style.display = abrir ? '' : 'none';
+  $('menuBtn').classList.toggle('on', abrir);
+});
+const cerrarOpciones = () => { opcionesEl.style.display = 'none'; $('menuBtn').classList.remove('on'); };
+$('opcCerrar').addEventListener('click', cerrarOpciones);
+for (const el of opcionesEl.querySelectorAll('.cierra')) el.addEventListener('click', cerrarOpciones);
+$('opcAtajos').addEventListener('click', () => showHint(ATAJOS));
+$('salaBtn').addEventListener('click', cerrarOpciones);
+// la barra del campo de visión se cierra tocando afuera de ella
+// y ese toque solo cierra (no agarra una foto, no saca otra, no borra)
+let tragarClick = false;
+document.addEventListener('pointerdown', e => {
+  if (fovPanel.style.display !== 'none' && !fovPanel.contains(e.target) && e.target !== fovBtn) {
+    fovPanel.style.display = 'none'; fovBtn.classList.remove('on');
+    e.stopPropagation(); e.preventDefault(); tragarClick = true;
+    setTimeout(() => { tragarClick = false; }, 600);
+  }
+}, true);
+document.addEventListener('click', e => { if (tragarClick) { tragarClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+$('opcRegistro').addEventListener('click', () => diagAbrir());
+
 // ---------- compu: teclado y rueda del mouse ----------
 const TACTIL = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 const teclas = new Set();
@@ -800,7 +872,7 @@ function tecladoMover() {
 }
 const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
   'C: cámara · espacio: sacar foto / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
-  '1-4: modos · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
+  '1: mover · 2-4: recortar, encuadre, girar · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
 const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
 window.addEventListener('keydown', e => {
@@ -811,12 +883,19 @@ window.addEventListener('keydown', e => {
   const click = el => { if (visible(el)) el.click(); };
   if (c === 'Space') { e.preventDefault(); if (held) click(dropBtn); else click(shootBtn); }
   else if (c === 'Enter') click(dropBtn);
-  else if (c === 'Escape') { if (held) click(cancelBtn); else for (const id of ['salaPanel', 'fovPanel', 'diag', 'personajePanel', 'salasPanel']) { const el = $(id); if (el) el.style.display = 'none'; } }
+  else if (c === 'Escape') {
+    if (held) click(cancelBtn);
+    else {
+      for (const id of ['salaPanel', 'fovPanel', 'diag', 'salasPanel', 'opciones']) { const el = $(id); if (el) el.style.display = 'none'; }
+      if (pjVista) pjCerrar();
+      $('menuBtn').classList.remove('on'); fovBtn.classList.remove('on');
+    }
+  }
   else if (c === 'Delete' || c === 'Backspace') click(trashBtn);
   else if (c === 'KeyC' && !held) click(camOn ? unequipBtn : equipBtn);
-  else if (c === 'KeyG') click(grillaBtn);
+  else if (c === 'KeyG') { if (visible($('edicion'))) grillaBtn.click(); }
   else if (c === 'KeyH') showHint(ATAJOS);
-  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'encuadre', 'girar'][+c.slice(5) - 1]; if (visible(modesEl)) { setMode(m); showHint(MODE_HINT[m]); } }
+  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'encuadre', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
   if (c.startsWith('Arrow')) e.preventDefault();
 });
 window.addEventListener('keyup', e => teclas.delete(e.code));
@@ -859,7 +938,7 @@ canvas.addEventListener('pointerdown', e => {
   if (touches.size === 2) {
     const g = twoFingers();
     const L = cur();
-    gesture = { d0: g.d, a0: g.a, lastD: g.d, lastA: g.a, uv0: L.uv.slice() };
+    gesture = { d0: g.d, a0: g.a, lastD: g.d, lastA: g.a, uv0: L.uv.slice(), giro: 0, girando: false };
     for (const tt of touches.values()) { tt.moved = true; tt.crop = null; }
   }
 });
@@ -876,8 +955,12 @@ canvas.addEventListener('pointermove', e => {
     let da = g.a - gesture.lastA; da = Math.atan2(Math.sin(da), Math.cos(da));
     const k = g.d / Math.max(10, gesture.lastD);
     gesture.lastA = g.a; gesture.lastD = g.d;
-    if (mode === 'mover') { scaleBy(L, k); rollBy(L, -da); }
-    else if (mode === 'girar') rollBy(L, -da);
+    // el giro con dos dedos recién arranca pasados ~10°: así al agrandar/achicar no se tuerce sin querer
+    let giro = 0;
+    if (gesture.girando) giro = da;
+    else { gesture.giro += da; if (Math.abs(gesture.giro) > 0.17) { gesture.girando = true; giro = gesture.giro - Math.sign(gesture.giro) * 0.17; } }
+    if (mode === 'mover') { scaleBy(L, k); if (giro) rollBy(L, -giro); }
+    else if (mode === 'girar') { if (giro) rollBy(L, -giro); }
     else if (mode === 'encuadre') zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
     return;
   }
@@ -1008,16 +1091,28 @@ function draw(now) {
   const b = basis();
 
   const [kx, ky] = tecladoMover();
-  const mx = clamp(joy.x + kx, -1, 1), my = clamp(joy.y + ky, -1, 1);
+  if (!joy.x && !joy.y && !kx && !ky) { corriendoT = 0; corriendo = 0; }
+  const mx = clamp(joy.x + kx, -2, 2), my = clamp(joy.y + ky, -2, 2);   // teclado con shift llega a 1.8
+  let paso = [0, 0];
   if (mx || my) {
     let fw = [b.f[0], 0, b.f[2]];
     if (len(fw) < 0.2) fw = [b.u[0], 0, b.u[2]];
     fw = norm(fw);
     const rt = norm(cross(fw, [0, 1, 0]));
     const v = add(mul(fw, -my), mul(rt, mx));
-    pos[0] += v[0] * MOVE * dt; pos[2] += v[2] * MOVE * dt;
+    // con el joystick a fondo más de un segundo, de a poco va más rápido (hasta 2.5x): cruzar un museo grande no aburre.
+    // (solo el joystick: el teclado siempre está "a fondo" y para eso tiene shift)
+    if (Math.hypot(joy.x, joy.y) > 0.9) { corriendoT += dt; if (corriendoT > 1) corriendo = Math.min(1, corriendo + dt); }
+    else { corriendoT = 0; corriendo = Math.max(0, corriendo - dt * 3); }
+    const rapido = 1 + 1.5 * corriendo;
+    paso = [v[0] * MOVE * rapido * dt, v[2] * MOVE * rapido * dt];
   }
-  fisica(dt);
+  // de a pasos de 10 cm como mucho: si en un cuadro lento avanzás más que el radio del cuerpo, atravesarías paredes
+  const nPasos = Math.max(1, Math.ceil(Math.hypot(paso[0], paso[1]) / 0.1));
+  for (let i = 0; i < nPasos; i++) {
+    pos[0] += paso[0] / nPasos; pos[2] += paso[1] / nPasos;
+    fisica(dt / nPasos);
+  }
 
   // la vista previa toma la proporción real de la cámara la primera vez
   if (preview.fresh && camReady && video.videoWidth) {
@@ -1066,14 +1161,18 @@ function escena(b, dt, yo) {
   salaDraw(b, dt);
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
 
-  // en la mano
+  // en la mano (con la grilla prendida, primero las guías en su plano)
   if (yo) { /* en el editor no se muestra lo que tenés en la mano */ }
   else if (held) {
-    drawFramed(heldPose(b), held.work.tex, [1, 1, 1]);
+    const p = heldPose(b);
+    if (grilla && !held.aim) guiasGrilla(p, [1, 1, 1]);
+    drawFramed(p, held.work.tex, [1, 1, 1]);
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
-    drawFramed(previewPose(b), videoTex, [1, 0.47, 0.31]);
+    const p = previewPose(b);
+    if (grilla) guiasGrilla(p, [1, 0.47, 0.31]);
+    drawFramed(p, videoTex, [1, 0.47, 0.31]);
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)

@@ -18,7 +18,8 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
     window.__heldScreen = () => { const L = __game.held ? __game.held.L : __game.preview; const P = worldPose(basis(), L); const c = (sx,sy)=>__proj([P.c[0]+P.r[0]*P.w/2*sx+P.u[0]*P.h/2*sy, P.c[1]+P.r[1]*P.w/2*sx+P.u[1]*P.h/2*sy, P.c[2]+P.r[2]*P.w/2*sx+P.u[2]*P.h/2*sy]); return { tl: c(-1,1), tr: c(1,1), bl: c(-1,-1), br: c(1,-1), P }; }; });
   await pg.goto('http://localhost:8135/?borrar'); await pg.waitForTimeout(400);
   await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady); await pg.waitForTimeout(300);
-  ok('barra de modos visible, mover activo', await pg.isVisible('#modes') && await G(() => __game.mode) === 'mover');
+  ok('edición visible, mover activo', await pg.isVisible('#edicion') && await G(() => __game.mode) === 'mover');
+  await pg.tap('#ajustar'); await pg.waitForTimeout(100);
   const s0 = await G(() => __heldScreen());
   // marco de grosor constante: comparar grosor en px a distinta distancia (se mide en la captura)
   // mover: agrandar y girar en sentido horario
@@ -34,10 +35,10 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   await pg.mouse.move(dbx.x+22, dbx.y+dbx.height*0.6); await pg.mouse.down(); await pg.mouse.move(dbx.x+22, dbx.y+dbx.height*0.25, {steps:5}); await pg.mouse.up();
   const pd1 = await G(() => ({ w: __game.preview.w, d: Math.hypot(...__game.preview.c), sw: __heldScreen().tr[0] - __heldScreen().tl[0] }));
   ok(`barra: alejar achica en pantalla (${pd0.sw.toFixed(0)}px -> ${pd1.sw.toFixed(0)}px), tamaño real igual`, pd1.d > pd0.d * 1.5 && Math.abs(pd1.w - pd0.w) < 1e-9 && pd1.sw < pd0.sw * 0.7);
-  await pg.tap('#reset'); await pg.waitForTimeout(100);
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.waitForTimeout(100);
   ok('↺ restablece la vista previa', Math.abs(await G(() => __game.preview.w) - w0) < 1e-6);
   // recortar la vista previa: arrastrar el borde derecho hacia la izquierda
-  await pg.tap('[data-m="recortar"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="recortar"]');
   let s = await G(() => __heldScreen());
   const rightX = s.tr[0], midY = (s.tr[1]+s.br[1])/2, leftX0 = s.tl[0];
   await drag1(rightX - 4, midY, rightX - 80, midY);
@@ -54,7 +55,7 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   ok('recortar: arrastrar lejos de la foto sigue mirando', Math.abs(await G(() => heading(basis().f)) - y0) > 0.2);
   await G(() => __game.look(0,0));
   // encuadre: zoom y pan
-  await pg.tap('#reset'); await pg.tap('[data-m="encuadre"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="encuadre"]');
   await two(0, 50, 0, 120);
   const z = await G(() => __game.preview.uv);
   ok(`encuadre: pellizco hace zoom adentro (uv ${z.map(v=>v.toFixed(2))})`, (z[2]-z[0]) < 0.6 && Math.abs((z[0]+z[2])/2 - 0.5) < 0.01);
@@ -62,21 +63,21 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   const z2 = await G(() => __game.preview.uv);
   ok(`encuadre: arrastrar a la derecha mueve la imagen a la derecha (u0 ${z[0].toFixed(3)} -> ${z2[0].toFixed(3)})`, z2[0] < z[0] - 0.02);
   // girar: arrastrar a la derecha => el borde derecho se aleja (se ve más chico)
-  await pg.tap('#reset'); await pg.tap('[data-m="girar"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="girar"]');
   await drag1(cx, cy, cx + 80, cy);
   s = await G(() => __heldScreen());
   const hl = s.bl[1]-s.tl[1], hr = s.br[1]-s.tr[1];
   ok(`girar: arrastrar a la derecha aleja el lado derecho (alto izq ${hl.toFixed(0)} der ${hr.toFixed(0)})`, hr < hl - 5);
-  await pg.tap('#reset'); await pg.tap('[data-m="mover"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => setMode('mover'));
 
   // sacar con recorte y agarrar sin salto
-  await pg.tap('[data-m="recortar"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="recortar"]');
   s = await G(() => __heldScreen());
   await drag1(s.tr[0]-4, (s.tr[1]+s.br[1])/2, s.tr[0]-60, (s.tr[1]+s.br[1])/2);
   await pg.tap('#shoot'); await pg.waitForTimeout(300);
   const wk = await G(() => ({ uv: __game.works[0].uv, c: __game.works[0].c }));
   ok(`la foto sacada guarda el recorte (uv ${wk.uv.map(v=>v.toFixed(2))})`, wk.uv[2] < 0.95);
-  await pg.tap('#reset'); await pg.tap('[data-m="mover"]');
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => setMode('mover'));
   await G(() => __game.look(10, 5)); await pg.waitForTimeout(100);
   const tgt = await G(() => __proj(__game.works[0].c));
   console.log('     la foto estaba en pantalla en', tgt.map(v=>v.toFixed(0)));
@@ -91,18 +92,14 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   // agarrar, encuadre, soltar, recargar
   await G(() => __game.look(10, 5)); await pg.waitForTimeout(100);
   await pg.touchscreen.tap(tgt[0], tgt[1]); await pg.waitForTimeout(1200);
-  await pg.tap('[data-m="encuadre"]'); await two(0, 50, 0, 100);
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="encuadre"]'); await two(0, 50, 0, 100);
   const uvE = await G(() => __game.held.L.uv);
   await pg.tap('#drop'); await pg.waitForTimeout(500);
   await pg.reload(); await pg.waitForTimeout(800);
   const uvR = await G(() => __game.works[0] && __game.works[0].uv);
   ok(`al recargar mantiene encuadre (uv ${uvR && uvR.map(v=>v.toFixed(2))})`, uvR && Math.abs(uvR[0]-uvE[0]) < 1e-6 && Math.abs(uvR[2]-uvE[2]) < 1e-6);
   // fov
-  const f0 = await G(() => __game.fov);
-  await pg.tap('#start').catch(()=>{}); await pg.waitForTimeout(300);
-  await pg.tap('#fov'); const f1 = await G(() => __game.fov);
-  await pg.reload(); await pg.waitForTimeout(500);
-  ok(`fov cambia (${f0} -> ${f1}) y se guarda (${await G(() => __game.fov)})`, f1 !== f0 && await G(() => __game.fov) === f1);
+  // (el fov se prueba en test9: es una barra en el menú, no un botón que va cambiando)
   await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady); await pg.waitForTimeout(300);
   await pg.screenshot({ path: out + 'v51.png' });
   console.log('errors', errs);

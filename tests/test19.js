@@ -33,6 +33,8 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
   // C guarda la cámara
   await pg.keyboard.press('KeyC'); await pg.waitForTimeout(300);
   ok('C guarda la cámara', !(await pg.evaluate(() => __game.camOn)));
+  const g0 = await pg.evaluate(() => __game.grilla); await pg.keyboard.press('KeyG'); await pg.waitForTimeout(100);
+  ok('G sin nada en la mano no cambia la grilla', (await pg.evaluate(() => __game.grilla)) === g0);
   // clic en la foto la agarra, esc cancela
   const sc = await pg.evaluate(() => { const w = __game.works[0]; return w.c; });
   await pg.evaluate(() => __game.look(0, 0));

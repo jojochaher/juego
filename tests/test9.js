@@ -34,7 +34,7 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   ok('equipar: vuelve la cámara y el obturador', await pg.isVisible('#shoot') && await pg.isVisible('#unequip'));
   // fov
   ok('panel fov cerrado', !(await pg.isVisible('#fovPanel')));
-  await pg.tap('#fov');
+  await pg.evaluate(() => { if (document.getElementById('opciones').style.display === 'none') document.getElementById('menuBtn').click(); }); await pg.tap('#fov');
   ok('tocar fov abre la barra', await pg.isVisible('#fovPanel'));
   const tr = await pg.locator('#fovTrack').boundingBox();
   await pg.mouse.move(tr.x + tr.width*0.5, tr.y+2); await pg.mouse.down(); await pg.mouse.move(tr.x - 40, tr.y+2, {steps: 4}); await pg.mouse.up();
@@ -44,8 +44,8 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   ok(`barra va de punta a punta (${lo}° a ${hi}°)`, lo === 5 && hi === 170);
   await pg.screenshot({ path: out + 'v52_fov.png' });
   await pg.mouse.move(tr.x + 10, tr.y+2); await pg.mouse.down(); await pg.mouse.move(tr.x + tr.width*(45/165), tr.y+2, {steps: 4}); await pg.mouse.up();
-  await pg.tap('#fov');
-  ok(`tocar fov de nuevo la cierra (quedó en ${await G(() => __game.fov)}°)`, !(await pg.isVisible('#fovPanel')));
+  await pg.tap('canvas', { position: { x: 200, y: 150 } });
+  ok(`tocar afuera la cierra (quedó en ${await G(() => __game.fov)}°)`, !(await pg.isVisible('#fovPanel')));
   console.log('errors', errs);
   await b.close(); srv.close();
 })();

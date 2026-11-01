@@ -173,16 +173,25 @@
     position: fixed; left: 12px; top: calc(30px + env(safe-area-inset-top)); width: 56px; height: 56px; z-index: 3;
     border-radius: 50%; object-fit: cover; transform: scaleX(-1); border: 2px solid rgba(255,255,255,0.6); pointer-events: none;
   }
-  #modes {
+  #edicion {
     position: fixed; left: 0; right: 0; bottom: calc(176px + env(safe-area-inset-bottom));
+    display: flex; justify-content: center; gap: 8px; z-index: 3; pointer-events: none;
+  }
+  #edicion .pill { pointer-events: auto; font-size: 13px; padding: 7px 14px; }
+  #edicion .pill.on, #modes .pill.on { background: rgba(255,255,255,0.9); color: #111; }
+  #modes {
+    position: fixed; left: 0; right: 0; bottom: calc(216px + env(safe-area-inset-bottom));
     display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
   }
   #modes .pill { pointer-events: auto; }
-  #grilla {
-    position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(222px + env(safe-area-inset-bottom));
-    z-index: 3; font-size: 13px; padding: 6px 12px;
+  #menuBtn { font-size: 15px; padding: 6px 13px; }
+  .hojaAbajo {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
+    background: rgba(16,16,21,0.96); border-radius: 20px 20px 0 0; display: flex; flex-direction: column; gap: 12px; max-width: 560px; margin: 0 auto;
   }
-  #grilla.on { background: rgba(255,255,255,0.9); color: #111; }
+  .hojaAbajo .fila { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .hojaAbajo .pill { font-size: 14px; padding: 9px 14px; }
+  .hojaAbajo .pill.on, .hojaAbajo .pill.blanco { background: rgba(255,255,255,0.9); color: #111; }
   #modes .pill.on { background: rgba(255,255,255,0.9); color: #111; }
   #cancel {
     right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
@@ -205,20 +214,18 @@
 <div id="top">
   <div id="salaBtn" class="ctl pill" style="display:none">sala</div>
   <div id="micBtn" class="ctl pill" style="display:none">mic</div>
-  <div id="caraBtn" class="ctl pill" style="display:none">cara</div>
-  <div id="home" class="ctl pill" style="display:none">inicio</div>
-  <div id="gyroT" class="ctl pill" style="display:none"></div>
-  <div id="fov" class="ctl pill" style="display:none"></div>
-  <div id="inv" class="ctl pill" style="display:none"></div>
+  <div id="menuBtn" class="ctl pill" style="display:none" aria-label="opciones">☰</div>
 </div>
- <div id="modes" style="display:none">
-  <div class="pill" data-m="mover">mover</div>
+<div id="modes" style="display:none">
   <div class="pill" data-m="recortar">recortar</div>
   <div class="pill" data-m="encuadre">encuadre</div>
   <div class="pill" data-m="girar">girar</div>
-  <div class="pill" id="reset" aria-label="restablecer">↺</div>
+  <div class="pill" id="reset" aria-label="restablecer">↺ como era</div>
 </div>
-<div id="grilla" class="pill" style="display:none">grilla: no</div>
+<div id="edicion" style="display:none">
+  <div id="grilla" class="pill">grilla</div>
+  <div id="ajustar" class="pill">ajustar ▾</div>
+</div>
 <div id="equip" class="ctl" style="display:none" aria-label="equipar cámara"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
 <div id="unequip" class="ctl" style="display:none" aria-label="guardar cámara"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/><path d="M3 3l18 18" stroke-linecap="round"/></svg></div>
 <div id="fovPanel" style="display:none"><div id="fovTrack"><div id="fovKnob"></div></div><span id="fovVal"></span></div>
@@ -242,6 +249,13 @@
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
+<div id="opciones" class="hojaAbajo" style="display:none">
+  <div class="fila"><b>opciones</b><div id="opcCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>
+  <div class="fila"><div id="home" class="pill cierra">volver al inicio</div><div id="fov" class="pill cierra">campo de visión</div></div>
+  <div class="fila"><div id="gyroT" class="pill" style="display:none"></div><div id="inv" class="pill"></div><div id="caraBtn" class="pill" style="display:none">cara</div></div>
+  <div class="fila"><div class="pill abrirPersonaje cierra">tu personaje</div><div class="pill abrirSalas cierra">mis salas</div></div>
+  <div class="fila"><div id="opcAtajos" class="pill cierra">atajos de teclado</div><div id="opcRegistro" class="pill cierra">registro</div></div>
+</div>
 <div id="personajePanel" style="display:none">
   <div class="fila"><b>tu personaje</b><span class="nota">arrastrá para girar</span><div id="pjListo" class="pill blanco" style="margin-left:auto">listo</div></div>
   <div class="fila"><span class="et">cuerpo</span><div class="pill" data-cuerpo="torso">con torso</div><div class="pill" data-cuerpo="sin">sin torso</div></div>

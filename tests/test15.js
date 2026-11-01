@@ -29,7 +29,7 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
   // en el juego: el botón aparece al editar
   ok('botón grilla visible con la cámara', await pg.isVisible('#grilla'));
   await pg.tap('#grilla');
-  ok('grilla: sí', (await pg.textContent('#grilla')) === 'grilla: sí' && await pg.evaluate(() => __game.grilla));
+  ok('grilla prendida', await pg.evaluate(() => __game.grilla && document.getElementById('grilla').classList.contains('on')));
   await pg.evaluate(() => __game.look(17, 9)); await pg.waitForTimeout(300);
   await pg.tap('#shoot'); await pg.waitForTimeout(600);
   const w = await pg.evaluate(() => { const w = __game.works[0]; return { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h }; });
