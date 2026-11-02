@@ -107,12 +107,31 @@ function rtcPonerPistas(p) {
     if (kind === 'video') {
       const v = vids.indexOf(t) === 1 ? rtcVideoVista() : (rtc.cara ? rtc.cara.getVideoTracks()[0] : null);
       if (t.sender.track !== v) t.sender.replaceTrack(v).catch(() => {});
-      try {   // liviano: la vista previa no necesita más
-        const prm = t.sender.getParameters();
-        if (prm.encodings && prm.encodings[0] && prm.encodings[0].maxBitrate !== 400000) { prm.encodings[0].maxBitrate = 400000; t.sender.setParameters(prm).catch(() => {}); }
-      } catch (e) {}
+      rtcCalidad(t, vids.indexOf(t) === 1, p.puente);
     }
   }
+}
+// calidad: la cara se ve chica arriba del muñequito, no hace falta más. Por el servidor puente (TURN, se paga
+// por GB) va todavía más liviano. Sin límite, WebRTC manda una cara de 320 px a ~500 kbps o más.
+const RTC_KBPS = { cara: 150, caraPuente: 80, vista: 400, vistaPuente: 200 };
+function rtcCalidad(t, esVista, puente) {
+  const max = 1000 * RTC_KBPS[(esVista ? 'vista' : 'cara') + (puente ? 'Puente' : '')], fps = esVista ? 24 : 15;
+  try {
+    const prm = t.sender.getParameters(), e = prm.encodings && prm.encodings[0];
+    if (e && (e.maxBitrate !== max || e.maxFramerate !== fps)) { e.maxBitrate = max; e.maxFramerate = fps; t.sender.setParameters(prm).catch(() => {}); }
+  } catch (e) {}
+}
+// ¿la conexión con esta persona va por el servidor puente? (cuando la directa no pasa, ej. otro país o datos móviles)
+async function rtcPorPuente(pc) {
+  try {
+    const st = await pc.getStats();
+    let par = null;
+    st.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) par = st.get(r.selectedCandidatePairId); });
+    if (!par) st.forEach(r => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') par = r; });
+    if (!par) return false;
+    const l = st.get(par.localCandidateId), rr = st.get(par.remoteCandidateId);
+    return !!((l && l.candidateType === 'relay') || (rr && rr.candidateType === 'relay'));
+  } catch (e) { return false; }
 }
 function rtcPistas() { for (const p of rtc.peers.values()) rtcPonerPistas(p); }
 
@@ -143,6 +162,11 @@ async function rtcNuevo(id) {
   pc.ontrack = e => rtcPistaRemota(p, e.track, e.transceiver);
   pc.onconnectionstatechange = () => {
     diag(`rtc ${id.slice(0, 4)}: ${pc.connectionState}`);
+    if (pc.connectionState === 'connected') rtcPorPuente(pc).then(v => {
+      if (rtc.peers.get(id) !== p) return;
+      if (v) diag(`rtc ${id.slice(0, 4)}: por el puente`);
+      if (v !== !!p.puente) { p.puente = v; rtcPonerPistas(p); }
+    });
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       if (rtc.peers.get(id) === p) { rtcCerrar(id); setTimeout(rtcSync, 1500); }
     }
