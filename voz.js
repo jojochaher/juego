@@ -102,7 +102,7 @@ function vozPista() {
 async function vozEscucharme(si) {
   voz.escucharme = si;
   if (si && !rtc.mic && !vozCadena.prueba) {
-    try { vozCadena.prueba = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+    try { vozCadena.prueba = await navigator.mediaDevices.getUserMedia({ audio: RTC_MIC }); }
     catch (e) { showHint('no pude abrir el micrófono'); voz.escucharme = false; }
   }
   if (!si && vozCadena.prueba) { vozCadena.prueba.getTracks().forEach(t => t.stop()); vozCadena.prueba = null; }

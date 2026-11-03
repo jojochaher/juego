@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.3.3';
+const VERSION = 'v10.3.4';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -610,13 +610,22 @@ async function loadWorks() {
 // ---------- cámara (un ítem que se equipa y se guarda) ----------
 let camReady = false, camOn = true, camStarting = false;
 try { camOn = localStorage.getItem('camara') !== '0'; } catch (e) {}
-async function startCamera() {
+// conMic: al arrancar ya en una sala, cámara y micrófono en un solo pedido (un cartel en vez de dos en iPhone)
+async function startCamera(conMic) {
   if (camReady || camStarting) return;
   camStarting = true;
   try {
-    const s = await navigator.mediaDevices.getUserMedia({
-      audio: false, video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 960 } },
-    });
+    const vid = { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 960 } };
+    let s;
+    if (conMic) {
+      try {
+        s = await navigator.mediaDevices.getUserMedia({ audio: RTC_MIC, video: vid });
+        if (s.getAudioTracks().length && !rtc.mic) rtc.mic = new MediaStream(s.getAudioTracks());
+        else s.getAudioTracks().forEach(t => t.stop());
+        s = new MediaStream(s.getVideoTracks());
+      } catch (e) { diag('cámara y mic juntos: falló ' + e.name + ', pruebo solo la cámara'); s = null; }
+    }
+    if (!s) s = await navigator.mediaDevices.getUserMedia({ audio: false, video: vid });
     if (!camOn) { s.getTracks().forEach(t => t.stop()); return; }   // la guardaste mientras abría
     video.srcObject = s;
     await video.play();
@@ -1023,7 +1032,7 @@ startEl.addEventListener('click', async () => {
   startEl.remove();
   setMode('mover');
   ui();
-  if (camOn) await startCamera();
+  if (camOn) await startCamera(sala.active && rtc.on && rtc.micOn && !rtc.mic);
   if (sala.active) rtcMedios();   // micrófono y cara recién después de tocar (en iPhone, pedirlos antes falla)
   showHint(TACTIL ? 'joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla'
     : 'WASD o flechas para moverte · arrastrá con el mouse para mirar<br>clic en una foto para agarrarla · tecla H: atajos');

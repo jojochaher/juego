@@ -8,6 +8,7 @@
 // cuenta de José en metered.ca, plan gratis de 500 MB por mes (si se pasa, el puente se corta; no cobra).
 // La clave es pública a propósito (va en el juego): lo peor que puede pasar es que alguien gaste los 500 MB.
 const RTC_TURN = { app: 'jojochaher-juego', key: '5495d02f64a548b1c01bb827ab437ad94919' };
+const RTC_MIC = { echoCancellation: true, noiseSuppression: true };
 const RTC_SOLO_PUENTE = new URLSearchParams(location.search).has('puente');
 const RTC_STUN = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 
@@ -85,12 +86,21 @@ async function rtcMediosYa() {
   if (!rtc.on || !started) { rtcPintar(); return; }
   if (rtc.mic && !rtcViva(rtc.mic)) rtc.mic = null;
   if (rtc.cara && !rtcViva(rtc.cara)) rtc.cara = null;
+  const quieroCara = rtc.caraOn && !camOn;
+  // si faltan los dos, un solo pedido: el iPhone muestra un solo cartel (cámara y micrófono) en vez de dos
+  if (rtc.micOn && !rtc.mic && quieroCara && !rtc.cara) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: RTC_MIC, video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 320 } } });
+      if (s.getAudioTracks().length) rtc.mic = new MediaStream(s.getAudioTracks());
+      if (s.getVideoTracks().length) rtc.cara = new MediaStream(s.getVideoTracks());
+      if (rtc.cara && (!rtc.on || camOn || !rtc.caraOn)) { rtc.cara.getTracks().forEach(t => t.stop()); rtc.cara = null; }
+    } catch (e) { diag('mic y cara juntos: falló ' + e.name + ', pruebo por separado'); }
+  }
   if (rtc.micOn && !rtc.mic) {
-    try { rtc.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false }); }
+    try { rtc.mic = await navigator.mediaDevices.getUserMedia({ audio: RTC_MIC, video: false }); }
     catch (e) { showHint('no pude abrir el micrófono'); diag('mic: falló ' + e.name); rtc.micOn = false; }
   }
   if (!rtc.micOn && rtc.mic) { rtc.mic.getTracks().forEach(t => t.stop()); rtc.mic = null; }
-  const quieroCara = rtc.caraOn && !camOn;
   if (quieroCara && !rtc.cara) {
     try {
       rtc.cara = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 320 } } });
