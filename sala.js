@@ -587,6 +587,14 @@ function salaPintar() {
   document.getElementById('salaClave').textContent = clave == null ? 'no está guardada en este celu (volvé a entrar con ella)' : verla ? clave : '•'.repeat(clave.length);
   salaVer2.style.display = clave == null ? 'none' : '';
   document.getElementById('salaGente').textContent = n === 0 ? 'por ahora estás solo' : n === 1 ? 'hay 1 persona más' : `hay ${n} personas más`;
+  // cómo van la cara y la voz con cada uno (directo, por el servidor puente o sin conectar)
+  const red = typeof rtcResumen === 'function' && n ? rtcResumen() : null, partes = [];
+  if (red) {
+    if (red.dir) partes.push(`directo con ${red.dir}`);
+    if (red.pte) partes.push(`por el puente con ${red.pte}`);
+    if (red.no) partes.push(`conectando con ${red.no}`);
+  }
+  document.getElementById('salaRed').textContent = partes.length ? 'cara y voz: ' + partes.join(' · ') : '';
 }
 salaBtn.addEventListener('click', () => {
   const open = salaPanel.style.display === 'none';

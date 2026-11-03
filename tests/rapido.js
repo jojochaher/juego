@@ -34,6 +34,9 @@ const ok = (n, c) => { if (!c) fallas++; console.log((c ? 'OK   ' : 'FAIL ') + n
   ok('A recibe la cara y la voz de B', await espera(A, id => { const p = __game.rtc.peers.get(id); return p && p.video && p.video.videoWidth > 0 && p.audio; }, idB));
   const cal = await A.evaluate(id => { const p = __game.rtc.peers.get(id); return p.pc.getTransceivers().filter(t => t.sender && t.sender.track && t.sender.track.kind === 'video').map(t => t.sender.getParameters().encodings[0].maxBitrate); }, idB);
   ok('la cara va liviana (' + cal + ')', cal.length && cal.every(b => b === 150000) && !(await A.evaluate(id => __game.rtc.peers.get(id).puente, idB)));
+  await A.tap('#salaBtn');
+  ok('el panel de la sala dice cómo va la conexión (' + await A.textContent('#salaRed') + ')', /directo con 1/.test(await A.textContent('#salaRed')));
+  await A.tap('#salaBtn');
   await B.tap('#equip'); await B.waitForFunction(() => __game.camReady); await B.tap('#shoot'); await B.waitForTimeout(500);
   ok('A ve la foto que saca B', await espera(A, () => __game.works.length === 1, null, 8000));
   ok('se sigue viendo el piso en la sala', (await piso(A)) > 20);

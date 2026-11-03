@@ -4,8 +4,11 @@
 // La señalización (ofertas/respuestas) pasa por la misma sala de Firebase: salas/<hash>/rtc/<para>/<de>.
 // Se carga ANTES que game.js: acá solo se definen funciones.
 
-// Servidor de relevo (TURN) para datos móviles: con cuenta gratis en metered.ca (Open Relay) se completa esto.
-const RTC_TURN = { app: '', key: '' };   // ej: { app: 'juego', key: 'abc123' } -> https://juego.metered.live
+// Servidor puente (TURN) para cuando la conexión directa no pasa (otro país, datos móviles, wifi de hotel):
+// cuenta de José en metered.ca, plan gratis de 500 MB por mes (si se pasa, el puente se corta; no cobra).
+// La clave es pública a propósito (va en el juego): lo peor que puede pasar es que alguien gaste los 500 MB.
+const RTC_TURN = { app: 'jojochaher-juego', key: '5495d02f64a548b1c01bb827ab437ad94919' };
+const RTC_SOLO_PUENTE = new URLSearchParams(location.search).has('puente');
 const RTC_STUN = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 
 const rtc = {
@@ -17,16 +20,36 @@ const rtc = {
 };
 try { rtc.micOn = localStorage.getItem('mic') !== '0'; rtc.caraOn = localStorage.getItem('cara') !== '0'; } catch (e) {}
 
-async function rtcIceServers() {
-  if (rtc.ice) return rtc.ice;
-  rtc.ice = RTC_STUN.slice();
-  if (RTC_TURN.app && RTC_TURN.key) {
+// una sola vez por sesión; si falla, solo STUN por 60 s y se reintenta (en las pruebas con el mock, sin puente)
+let rtcIcePedido = null, rtcIceFallo = 0;
+function rtcIceServers() {
+  if (rtc.ice) return Promise.resolve(rtc.ice);
+  if (!RTC_TURN.app || /^http:\/\/localhost/.test(SALA_DB) || Date.now() - rtcIceFallo < 60000) return Promise.resolve(RTC_STUN.slice());
+  if (!rtcIcePedido) rtcIcePedido = (async () => {
     try {
-      const r = await fetch(`https://${RTC_TURN.app}.metered.live/api/v1/turn/credentials?apiKey=${RTC_TURN.key}`);
-      rtc.ice = rtc.ice.concat(await r.json());
-    } catch (e) {}
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 4000);
+      const r = await fetch(`https://${RTC_TURN.app}.metered.live/api/v1/turn/credentials?apiKey=${RTC_TURN.key}`, { signal: ctl.signal });
+      clearTimeout(t);
+      const d = await r.json();
+      if (!Array.isArray(d) || !d.length) throw new Error('respuesta rara');
+      rtc.ice = RTC_STUN.concat(d);
+      diag('rtc: puente listo');
+      return rtc.ice;
+    } catch (e) {
+      rtcIceFallo = Date.now(); diag('rtc: no pude pedir el puente (' + (e.name || e.message) + ')');
+      return RTC_STUN.slice();
+    } finally { rtcIcePedido = null; }
+  })();
+  return rtcIcePedido;
+}
+// para el panel de la sala: con cuántos va directo, por el puente o todavía sin conectar
+function rtcResumen() {
+  let dir = 0, pte = 0, no = 0;
+  for (const p of rtc.peers.values()) {
+    if (p.pc.connectionState !== 'connected') no++;
+    else if (p.puente) pte++; else dir++;
   }
-  return rtc.ice;
+  return { dir, pte, no };
 }
 
 // ---------- prender / apagar ----------
@@ -156,16 +179,19 @@ function rtcSync() {
 }
 
 async function rtcNuevo(id) {
-  const pc = new RTCPeerConnection({ iceServers: await rtcIceServers() });
+  // ?puente: obliga a ir por el servidor puente (para probar que anda; gasta de los 500 MB)
+  const pc = new RTCPeerConnection({ iceServers: await rtcIceServers(), iceTransportPolicy: RTC_SOLO_PUENTE ? 'relay' : 'all' });
   const p = { id, pc, faceOk: false };
   rtc.peers.set(id, p);
   pc.ontrack = e => rtcPistaRemota(p, e.track, e.transceiver);
   pc.onconnectionstatechange = () => {
     diag(`rtc ${id.slice(0, 4)}: ${pc.connectionState}`);
+    if (typeof salaPintar === 'function') salaPintar();
     if (pc.connectionState === 'connected') rtcPorPuente(pc).then(v => {
       if (rtc.peers.get(id) !== p) return;
       if (v) diag(`rtc ${id.slice(0, 4)}: por el puente`);
       if (v !== !!p.puente) { p.puente = v; rtcPonerPistas(p); }
+      if (typeof salaPintar === 'function') salaPintar();
     });
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       if (rtc.peers.get(id) === p) { rtcCerrar(id); setTimeout(rtcSync, 1500); }
