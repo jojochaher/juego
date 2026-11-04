@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.3.4';
+const VERSION = 'v10.3.5';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -866,16 +866,29 @@ for (const el of opcionesEl.querySelectorAll('.cierra')) el.addEventListener('cl
 $('opcAtajos').addEventListener('click', () => showHint(ATAJOS));
 $('salaBtn').addEventListener('click', cerrarOpciones);
 // la barra del campo de visión se cierra tocando afuera de ella
-// y ese toque solo cierra (no agarra una foto, no saca otra, no borra)
-let tragarClick = false;
+// y ese toque solo cierra (no agarra una foto, no saca otra, no borra).
+// Se traga el click de ESE dedo, que llega después de levantarlo (aunque haya sido un toque largo):
+// hasta 600 ms después de su pointerup. Mientras sigue apoyado, los clicks son de otros dedos y pasan.
+// Si fue un arrastre no hay click: el bloqueo se va solo, o con el próximo toque.
+let tragarPtr = null, tragarHasta = 0;
 document.addEventListener('pointerdown', e => {
+  // un toque nuevo: su click es suyo, no se traga (isPrimary = no hay otro dedo apoyado: si quedó un dedo viejo anotado, es que no llegó su pointerup)
+  if (tragarPtr === null || e.isPrimary) { tragarPtr = null; tragarHasta = 0; }
   if (fovPanel.style.display !== 'none' && !fovPanel.contains(e.target) && e.target !== fovBtn) {
     fovPanel.style.display = 'none'; fovBtn.classList.remove('on');
-    e.stopPropagation(); e.preventDefault(); tragarClick = true;
-    setTimeout(() => { tragarClick = false; }, 600);
+    e.stopPropagation(); e.preventDefault();
+    tragarPtr = e.pointerId; tragarHasta = 0;
   }
 }, true);
-document.addEventListener('click', e => { if (tragarClick) { tragarClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+const tragarSuelta = e => {
+  if (e.pointerId !== tragarPtr) return;
+  tragarPtr = null; tragarHasta = e.type === 'pointerup' ? performance.now() + 600 : 0;
+};
+document.addEventListener('pointerup', tragarSuelta, true);
+document.addEventListener('pointercancel', tragarSuelta, true);
+document.addEventListener('click', e => {
+  if (tragarPtr === null && performance.now() < tragarHasta) { tragarHasta = 0; e.stopPropagation(); e.preventDefault(); }
+}, true);
 $('opcRegistro').addEventListener('click', () => diagAbrir());
 
 // ---------- compu: teclado y rueda del mouse ----------
