@@ -16,7 +16,7 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   const T = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((p,i)=>({x:p[0],y:p[1],id:i})) });
   await pg.goto('http://localhost:8168/?borrar'); await pg.goto('http://localhost:8168/'); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady);
   await pg.waitForTimeout(300);
-  if (await pg.evaluate(() => __game.grilla)) await pg.tap('#grilla');
+  while (await pg.evaluate(() => __game.grilla)) await pg.tap('#grilla');   // v10.8: el botón va 1 m → 50 cm → 25 cm → apagada
   await pg.tap('#ajustar'); await pg.tap('[data-m="recortar"]');
   ok('modo recortar', await pg.evaluate(() => __game.mode === 'recortar'));
 

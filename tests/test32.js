@@ -18,7 +18,7 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   const cerca = (a, b) => Math.abs(a - b) < 1e-6;
   await pg.goto('http://localhost:8172/?borrar'); await pg.goto('http://localhost:8172/'); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady);
   await pg.waitForTimeout(5500);   // que se vaya el texto de ayuda
-  if (await pg.evaluate(() => __game.grilla)) await pg.tap('#grilla');
+  while (await pg.evaluate(() => __game.grilla)) await pg.tap('#grilla');   // v10.8: el botón va 1 m → 50 cm → 25 cm → apagada
 
   // 1. el bloque se equipa como la cámara
   ok('con la cámara: botón del bloque al lado de guardar la cámara', await vis('bloque') && await vis('unequip') && !(await pg.evaluate(() => document.getElementById('bloque').classList.contains('solo'))));
@@ -127,7 +127,8 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   ok(`escalar con grilla: 1x1 → ${v.w} x ${v.h} m, sin recortar`, cerca(v.w, 2) && cerca(v.h, 1) && v.uv.join() === '0,0,1,1');
 
   // 5. con el bloque equipado (cámara guardada), un bloque agarrado se llena igual con la cámara: "cámara" la abre
-  await pg.tap('#grilla'); await pg.tap('[data-m="escalar"]'); await pg.tap('#ajustar');
+  while (await pg.evaluate(() => __game.grilla)) await pg.tap('#grilla');
+  await pg.tap('[data-m="escalar"]'); await pg.tap('#ajustar');
   await pg.tap('#bloque'); await pg.waitForTimeout(200);
   await pg.evaluate(() => { const L = __game.previewBloque; L.c = [0, 0, 1.5]; L.r = [1, 0, 0]; L.u = [0, 1, 0]; L.w = 0.9; L.h = 0.45; });
   await pg.tap('#shoot'); await pg.waitForTimeout(200);

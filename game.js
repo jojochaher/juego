@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.7';
+const VERSION = 'v10.8';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -498,12 +498,20 @@ function fisica(dt) {
 // ---------- grilla: alinear lo que está en la mano ----------
 const SNAP = 0.1, SNAP_YAW = Math.PI / 2;
 let grilla = false;
-try { grilla = localStorage.getItem('grilla') === '1'; } catch (e) {}
+// el paso de la grilla (v10.8, pedido de José): 1 m, 50 cm o 25 cm; el botón va 1 m → 50 cm → 25 cm → apagada
+const PASOS_GRILLA = [1, 0.5, 0.25];
+let pasoGrilla = 1;
+try {
+  grilla = localStorage.getItem('grilla') === '1';
+  const pg = Number(localStorage.getItem('grillaPaso'));
+  if (PASOS_GRILLA.includes(pg)) pasoGrilla = pg;
+} catch (e) {}
 const snapA = (a, k) => Math.round(a / k) * k;
-// grilla (todo de a metro, como los puntitos del piso): de pie (o acostada si está casi horizontal), mirando en
-// pasos de 90°, girada en pasos de 90°, ancho en metros enteros (1 m mínimo; el alto sigue la proporción de la foto)
-// y la esquina de abajo a la izquierda en un punto de la grilla de 1 m (x, y, z enteros).
-function snapPose(p) {
+const snapP = (v, P) => Math.round(v / P) * P;
+// grilla (de a P: 1 m como los puntitos del piso, 50 cm o 25 cm): de pie (o acostada si está casi horizontal), mirando en
+// pasos de 90°, girada en pasos de 90°, el lado más largo en múltiplos de P (P mínimo; el otro sigue la proporción)
+// y la esquina de abajo a la izquierda en un punto de la grilla (x, y, z múltiplos de P).
+function snapPose(p, P = pasoGrilla) {
   const up = [0, 1, 0];
   let n = norm(cross(p.r, p.u)), u;
   if (Math.abs(n[1]) > 0.7) {                       // acostada (piso o techo)
@@ -518,24 +526,31 @@ function snapPose(p) {
     u = add(mul(up, Math.round(Math.cos(t))), mul(r0, Math.round(Math.sin(t))));
   }
   const r = cross(u, n);                             // así cross(r, u) = n (el lado de adelante no cambia)
-  // el lado más largo, al metro más cercano (mínimo 1 m); el otro sigue la proporción (una tira angosta no se estira)
-  const k = p.w >= p.h ? Math.max(1, Math.round(p.w)) / p.w : Math.max(1, Math.round(p.h)) / p.h;
+  // el lado más largo, al múltiplo de P más cercano (mínimo P); el otro sigue la proporción (una tira angosta no se estira)
+  const k = p.w >= p.h ? Math.max(P, snapP(p.w, P)) / p.w : Math.max(P, snapP(p.h, P)) / p.h;
   const w = p.w * k, h = p.h * k;
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
-  const corner = c0.map(Math.round);
+  const corner = c0.map(v => snapP(v, P));
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
 }
-// guías: la grilla de 1 m en 3D alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R (1 m) de la foto
-// (alfa según la distancia a la foto: las líneas a 1 m o más ya no se ven, así que no se dibujan).
-// Los 4 bordes de la foto, prolongados, van más marcados; las demás líneas, más tenues cuanto más lejos.
+// guías: la grilla en 3D (de a pasoGrilla) alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R de la foto
+// (alfa según la distancia a la foto: las líneas a GUIA_R o más ya no se ven, así que no se dibujan).
+// GUIA_R es 1 m con pasos de 1 m y 50 cm, y 50 cm con pasos de 25 cm (si no, son demasiadas líneas para el celu).
+// Los 4 bordes de la foto, prolongados, van más marcados; las demás líneas, más tenues y finas cuanto más lejos y más chico el paso.
 // Todas se desvanecen en las puntas. No se dibujan las que cruzan la cara de la foto.
-const GUIA_R = 1;
+const guiaR = P => Math.min(1, 2 * P);
 function guiasGrilla(p, col) {
+  const P = pasoGrilla, finas = P >= 1 ? 1 : P >= 0.5 ? 0.85 : 0.7;
   const esquina = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
   const otra = add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h));
   const lo = [0, 1, 2].map(i => Math.min(esquina[i], otra[i])), hi = [0, 1, 2].map(i => Math.max(esquina[i], otra[i]));
   if (![...lo, ...hi].every(Number.isFinite)) return;
   const ext = [0, 1, 2].map(i => hi[i] - lo[i]);
+  // el paso de las guías: el de la grilla, salvo en fotos grandes (más de 12 pasos), donde se duplica hasta 1 m
+  // (si no, con 25 cm una foto de 4 m son cientos de líneas por cuadro). Igual caen en líneas de la grilla.
+  let G = P;
+  while (G < 1 && Math.max(...ext) / G > 12) G *= 2;
+  const GUIA_R = guiaR(G);
   const t = ext.indexOf(Math.min(...ext));            // el eje del grosor (la foto es plana en ese eje)
   const E = 1e-4, dentro = (i, v) => v > lo[i] + E && v < hi[i] - E, igual = (a, b) => Math.abs(a - b) < E;
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -567,18 +582,21 @@ function guiasGrilla(p, col) {
     for (const v of [lo[o], hi[o]]) { const q = [0, 0, 0]; q[t] = lo[t]; q[o] = v; bordes.push([e, o, v]); linea(e, q, 2.2, 0.85, true, 0); }
   }
   // la grilla
-  const rango = i => { const a = Math.floor(lo[i] + E) - GUIA_R, b = Math.ceil(hi[i] - E) + GUIA_R; return [i === 1 ? Math.max(0, a) : a, b]; };
+  // en números enteros de pasos (así no se acumulan errores de redondeo)
+  const nR = Math.ceil(GUIA_R / G - E);
+  const rango = i => { const a = Math.floor((lo[i] + E) / G) - nR, b = Math.ceil((hi[i] - E) / G) + nR; return [i === 1 ? Math.max(0, a) : a, b]; };
   for (const e of [0, 1, 2]) {
     const b = (e + 1) % 3, c = (e + 2) % 3, [b0, b1] = rango(b), [c0, c1] = rango(c);
-    for (let vb = b0; vb <= b1; vb++) for (let vc = c0; vc <= c1; vc++) {
+    for (let nb = b0; nb <= b1; nb++) for (let nc = c0; nc <= c1; nc++) {
+      const vb = nb * G, vc = nc * G;
       const q = [0, 0, 0]; q[b] = vb; q[c] = vc;
       const d = Math.hypot(Math.max(0, lo[b] - vb, vb - hi[b]), Math.max(0, lo[c] - vc, vc - hi[c]));
-      if (d > GUIA_R - 0.05) continue;                                // a 1 m ya no se ve
+      if (d > GUIA_R - 0.05 * GUIA_R) continue;                       // a GUIA_R ya no se ve
       if (bordes.some(([be, bo, bv]) => be === e && igual(q[t], lo[t]) && igual(q[bo], bv))) continue;   // ya es un borde
       let conNucleo = true;
       if (e === t) { if (dentro(b, vb) && dentro(c, vc)) continue; }          // atraviesa la foto de frente
-      else if (igual(q[t], lo[t]) && dentro(3 - e - t, q[3 - e - t])) conNucleo = false;   // va por encima de la cara de la foto
-      linea(e, q, 1.2, 0.3 * (1 - d / GUIA_R), conNucleo, d);
+      else if (dentro(3 - e - t, q[3 - e - t])) conNucleo = false;   // va por encima de la cara de la foto (o delante/detrás, a un paso: v10.8)
+      linea(e, q, 1.2 * finas, 0.3 * (1 - d / GUIA_R), conNucleo, d);
     }
   }
   gl.depthMask(true);
@@ -586,7 +604,7 @@ function guiasGrilla(p, col) {
 }
 
 // dónde queda lo que tenés en la mano (con la grilla prendida, ya alineado; también mientras se recorta o se escala:
-// los bordes se mueven de a metro, así lo que se ve es lo que queda)
+// los bordes se mueven de a un paso de la grilla, así lo que se ve es lo que queda)
 function heldPose(b) {
   if (held.aim) return held.work;
   const p = worldPose(b, held.L);
@@ -637,15 +655,15 @@ function fitUV(uv) {   // mantiene la ventana adentro de la imagen sin cambiar s
 }
 // recortar o escalar: mover bordes. edges = {l, r, t, b}; base = cómo estaba al apoyar el dedo; (a, bb) = el dedo
 // en el plano de la foto (metros, desde el centro de base). Recortar cambia qué parte de la imagen se ve (uv);
-// escalar (estirar) estira la imagen en x o en y. Con la grilla, los bordes caen en líneas de la grilla (de a metro
-// desde la esquina, que ya está en un punto entero) y solo se permite lo que queda igual al alinearlo: el lado más
-// largo en metros enteros. Si no hay ninguna posición posible, el borde no se mueve (devuelve false).
-function stableGrilla(w, h) { const m = Math.max(w, h); return m >= 1 - 1e-6 && Math.abs(m - Math.round(m)) < 1e-6; }
+// escalar (estirar) estira la imagen en x o en y. Con la grilla, los bordes caen en líneas de la grilla (de a un paso
+// desde la esquina, que ya está en un punto de la grilla) y solo se permite lo que queda igual al alinearlo: el lado más
+// largo en múltiplos del paso. Si no hay ninguna posición posible, el borde no se mueve (devuelve false).
+function stableGrilla(w, h, P = pasoGrilla) { const m = Math.max(w, h); return m >= P - 1e-6 && Math.abs(m - snapP(m, P)) < 1e-6; }
 function bordesA(L, base, edges, a, bb, estirar, alinear) {
   const [u0, v0, u1, v1] = base.uv;
   const su = base.w / (u1 - u0), sv = base.h / (v1 - v0);
   const L0 = -base.w / 2, R0 = base.w / 2, T0 = base.h / 2, B0 = -base.h / 2;
-  const mn = alinear ? 0.05 : 0.04 * len(base.c), MAX = 40;
+  const P = pasoGrilla, mn = alinear ? 0.05 : 0.04 * len(base.c), MAX = 40;
   const lim = {
     r: [L0 + mn, estirar ? L0 + MAX : L0 + (1 - u0) * su],
     l: [estirar ? R0 - MAX : R0 - u1 * su, R0 - mn],
@@ -659,10 +677,10 @@ function bordesA(L, base, edges, a, bb, estirar, alinear) {
     const [lo, hi] = lim[k];
     if (!alinear) return [clamp(quiero, lo, hi)];
     const o = [fijo];
-    for (let n = Math.ceil(lo - desde - E); desde + n <= hi + E; n++) if (desde + n >= lo - E) o.push(desde + n);
+    for (let n = Math.ceil((lo - desde) / P - E); desde + n * P <= hi + E; n++) if (desde + n * P >= lo - E) o.push(desde + n * P);
     return o;
   };
-  // los bordes de la izquierda y de abajo están en la grilla (la esquina); los otros, a metros enteros de ellos
+  // los bordes de la izquierda y de abajo están en la grilla (la esquina); los otros, a pasos enteros de ellos
   const xs = edges.r ? opciones('r', R0, L0, a).map(x => [L0, x]) : opciones('l', L0, L0, a).map(x => [x, R0]);
   const ys = edges.t ? opciones('t', T0, B0, bb).map(y => [B0, y]) : opciones('b', B0, B0, bb).map(y => [y, T0]);
   // la distancia se mide hasta donde iría el borde sin grilla (el dedo, dentro del límite): así pasarse de la imagen no avisa
@@ -684,7 +702,7 @@ function bordesA(L, base, edges, a, bb, estirar, alinear) {
     L.uv = [c01(u0 + (left - L0) / su), c01(v0 + (T0 - top) / sv), c01(u0 + (right - L0) / su), c01(v0 + (T0 - bottom) / sv)];
   }
   // ¿se quedó lejos del dedo porque la grilla no deja? (para avisar)
-  return { lejos: costo > 0.55 };
+  return { lejos: costo > 0.55 * P };
 }
 // dónde toca el dedo el plano de lo que está en la mano (coordenadas de la foto, en metros)
 function touchOnHeld(L, x, y) {
@@ -995,12 +1013,19 @@ function setAjustar(on) {
 ajustarBtn.addEventListener('click', () => setAjustar(!ajustando));
 resetBtn.addEventListener('click', resetHeld);
 const grillaBtn = $('grilla');
-function paintGrilla() { grillaBtn.textContent = grilla ? '▦ grilla' : '▦ grilla: no'; grillaBtn.classList.toggle('on', grilla); }
+const pasoTxt = P => P >= 1 ? '1 m' : Math.round(P * 100) + ' cm';
+function paintGrilla() { grillaBtn.textContent = grilla ? '▦ ' + pasoTxt(pasoGrilla) : '▦ grilla: no'; grillaBtn.classList.toggle('on', grilla); }
+// cada toque: apagada → 1 m → 50 cm → 25 cm → apagada
 grillaBtn.addEventListener('click', () => {
-  grilla = !grilla;
-  try { localStorage.setItem('grilla', grilla ? '1' : '0'); } catch (e) {}
+  if (!grilla) { grilla = true; pasoGrilla = PASOS_GRILLA[0]; }
+  else {
+    const i = PASOS_GRILLA.indexOf(pasoGrilla);
+    if (i < 0 || i >= PASOS_GRILLA.length - 1) grilla = false; else pasoGrilla = PASOS_GRILLA[i + 1];
+  }
+  try { localStorage.setItem('grilla', grilla ? '1' : '0'); localStorage.setItem('grillaPaso', String(pasoGrilla)); } catch (e) {}
   paintGrilla(); buzz(8);
-  if (grilla) showHint('todo de a metro, como los puntitos del piso: posición, altura, tamaño y giros de 90°');
+  if (grilla) showHint(pasoGrilla >= 1 ? 'grilla de a metro, como los puntitos del piso: posición, altura, tamaño y giros de 90°'
+    : 'grilla de a ' + pasoTxt(pasoGrilla) + ': posición, altura y tamaño; giros de 90°');
 });
 paintGrilla();
 
@@ -1294,7 +1319,7 @@ function dentroDeLoQueSeVe(L, x, y) {
 const modoBordes = () => mode === 'recortar' || mode === 'escalar';
 function recorteActivo() { if (!modoBordes()) return null; for (const t of touches.values()) if (t.crop) return t.crop; return null; }
 // con la grilla, al apoyar el dedo se toma el tamaño y lugar alineados que se ven, así el borde queda bajo el dedo
-// (y la esquina en un punto de la grilla: los bordes se mueven de a metro desde ahí)
+// (y la esquina en un punto de la grilla: los bordes se mueven de a un paso desde ahí)
 function recorteDesdeLoQueSeVe(L, x, y) {
   if (!grilla) return edgesAt(L, x, y);
   const b = basis(), p = snapPose(worldPose(b, L));
@@ -1355,7 +1380,7 @@ canvas.addEventListener('pointermove', e => {
       const r = bordesA(L, t.base, t.crop, p[0], p[1], mode === 'escalar' || vacioEnMano(), t.grilla && grilla);
       if (t.grilla && grilla && (!r || r.lejos) && !t.avisado) {
         t.avisado = true;
-        showHint('con la grilla los lados van de a metro: ' + (mode === 'escalar' ? 'así no entra' : 'así no se puede recortar'));
+        showHint('con la grilla los lados van de a ' + (pasoGrilla >= 1 ? 'metro' : pasoTxt(pasoGrilla)) + ': ' + (mode === 'escalar' ? 'así no entra' : 'así no se puede recortar'));
       }
     }
     return;
@@ -1657,6 +1682,6 @@ window.__game = {
   pos, works, joy,
   get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get previewBloque() { return previewBloque; }, get bloqueOn() { return bloqueOn; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
-  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, snapPose,
+  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, snapPose, stableGrilla,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };
