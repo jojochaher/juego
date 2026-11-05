@@ -189,6 +189,12 @@
     position: fixed; left: 12px; top: calc(30px + env(safe-area-inset-top)); width: 56px; height: 56px; z-index: 3;
     border-radius: 50%; object-fit: cover; transform: scaleX(-1); border: 2px solid rgba(255,255,255,0.6); pointer-events: auto; touch-action: none;
   }
+  /* cara apagada: en el mismo lugar, una carita para volver a prenderla */
+  #yoCaraOff {
+    position: fixed; left: 12px; top: calc(30px + env(safe-area-inset-top)); width: 56px; height: 56px; z-index: 3; box-sizing: border-box;
+    border-radius: 50%; border: 2px solid rgba(255,255,255,0.6); background: rgba(0,0,0,0.35); color: rgba(255,255,255,0.85);
+    display: flex; align-items: center; justify-content: center; pointer-events: auto; touch-action: none; cursor: pointer;
+  }
   #edicion {
     position: fixed; left: 0; right: 0; bottom: calc(176px + env(safe-area-inset-bottom));
     display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; z-index: 3; pointer-events: none; padding: 0 8px;
@@ -270,13 +276,14 @@
   </div>
 </div>
 <video id="yoCara" playsinline muted autoplay style="display:none"></video>
+<div id="yoCaraOff" style="display:none" aria-label="prender tu cara"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><circle cx="8.8" cy="10" r="0.9" fill="currentColor" stroke="none"/><circle cx="15.2" cy="10" r="0.9" fill="currentColor" stroke="none"/><path d="M8 14.3c1 1.6 2.4 2.4 4 2.4s3-.8 4-2.4"/></svg></div>
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
 <div id="opciones" class="hojaAbajo" style="display:none">
   <div class="fila"><b>opciones</b><div id="opcCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>
   <div class="fila"><div id="home" class="pill cierra">volver al inicio</div><div id="fov" class="pill cierra">campo de visión</div></div>
-  <div class="fila"><div id="gyroT" class="pill" style="display:none"></div><div id="inv" class="pill"></div><div id="caraBtn" class="pill" style="display:none">cara</div></div>
+  <div class="fila"><div id="gyroT" class="pill" style="display:none"></div><div id="inv" class="pill"></div></div>
   <div class="fila"><div class="pill abrirPersonaje cierra">tu personaje</div><div class="pill abrirSalas cierra">mis salas</div></div>
   <div class="fila"><div id="opcAtajos" class="pill cierra">atajos de teclado</div><div id="opcRegistro" class="pill cierra">registro</div></div>
   <div class="fila"><div id="opcComentario" class="pill cierra">dejar un comentario</div></div>

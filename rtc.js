@@ -398,12 +398,13 @@ function rtcVista(id) {
   return p.vistaTex;
 }
 
-// ---------- botones mic / cara ----------
+// ---------- mic (botón arriba) / cara (tocar tu cara la apaga; la carita la prende) ----------
 function rtcPintar() {
-  const mic = document.getElementById('micBtn'), cara = document.getElementById('caraBtn');
+  const mic = document.getElementById('micBtn');
   mic.textContent = rtc.micOn ? 'mic: sí' : 'mic: no';
-  cara.textContent = rtc.caraOn ? 'cara: sí' : 'cara: no';
-  mic.classList.toggle('on', !rtc.micOn); cara.classList.toggle('on', !rtc.caraOn);
+  mic.classList.toggle('on', !rtc.micOn);
+  const enSala = typeof sala === 'object' && sala.active && typeof started !== 'undefined' && started;
+  document.getElementById('yoCaraOff').style.display = enSala && !rtc.caraOn ? '' : 'none';
 }
 document.getElementById('micBtn').addEventListener('click', () => {
   rtc.micOn = !rtc.micOn;
@@ -411,16 +412,17 @@ document.getElementById('micBtn').addEventListener('click', () => {
   if (!rtc.micOn && rtc.mic) { rtc.mic.getTracks().forEach(t => t.stop()); rtc.mic = null; }
   rtcMedios();
 });
-document.getElementById('caraBtn').addEventListener('click', () => {
+function rtcCaraAlternar() {
   rtc.caraOn = !rtc.caraOn; rtc.caraAviso = false; rtc.caraFallo = 0;
   try { localStorage.setItem('cara', rtc.caraOn ? '1' : '0'); } catch (e) {}
   if (rtc.caraOn && camOn) showHint('tu cara se ve cuando guardás la cámara de fotos');
+  rtcPintar();
   rtcMedios();
-});
-// tocar tu cara (arriba a la izquierda) la apaga; se vuelve a prender desde ☰ → cara
+}
 document.getElementById('yoCara').addEventListener('click', () => {
   if (!rtc.caraOn) return;
-  document.getElementById('caraBtn').click();
-  showHint('cara apagada · ☰ → cara para prenderla');
+  rtcCaraAlternar();
+  showHint('cara apagada · tocá la carita para prenderla');
 });
+document.getElementById('yoCaraOff').addEventListener('click', () => { if (!rtc.caraOn) rtcCaraAlternar(); });
 rtcPintar();

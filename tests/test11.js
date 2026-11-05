@@ -14,7 +14,7 @@ const mock = require('./mockdb.js');
   const A = await mk(), B = await mk();
   const idA = await A.evaluate(() => __game.salaYo), idB = await B.evaluate(() => __game.salaYo);
   await A.evaluate(() => { if (document.getElementById('opciones').style.display === 'none') document.getElementById('menuBtn').click(); }); 
-  ok('botones mic y cara visibles en la sala', await A.isVisible('#micBtn') && await A.isVisible('#caraBtn'));
+  ok('botón mic visible en la sala y sin botón cara en el menú', await A.isVisible('#micBtn') && !(await A.$('#caraBtn')));
   await A.tap('#opcCerrar');
   ok('A tiene mic y cara propios', await A.waitForFunction(() => __game.rtc.mic && __game.rtc.cara, null, { timeout: 8000 }).then(() => true).catch(() => false));
   const conectado = await A.waitForFunction(id => { const p = __game.rtc.peers.get(id); return p && p.pc.connectionState === 'connected'; }, idB, { timeout: 20000 }).then(() => true).catch(() => false);
@@ -33,6 +33,13 @@ const mock = require('./mockdb.js');
   await A.screenshot({ path: out + 'v7_cara_pausa.png' });
   await B.tap('#unequip'); await B.waitForTimeout(2500);
   ok('al guardarla vuelve la cara', await B.evaluate(() => !!__game.rtc.cara));
+  // tocar tu cara la apaga y aparece la carita en el mismo lugar; tocar la carita la prende
+  await B.tap('#yoCara'); await B.waitForTimeout(800);
+  ok('tocar tu cara la apaga', await B.evaluate(() => !__game.rtc.cara && !__game.rtc.caraOn));
+  ok('en su lugar aparece la carita', await B.isVisible('#yoCaraOff') && !(await B.isVisible('#yoCara')));
+  await B.screenshot({ path: out + 'v1061_carita.png' });
+  await B.tap('#yoCaraOff'); await B.waitForTimeout(2500);
+  ok('tocar la carita la vuelve a prender', await B.evaluate(() => !!__game.rtc.cara && __game.rtc.caraOn) && await B.isVisible('#yoCara') && !(await B.isVisible('#yoCaraOff')));
   // mic no
   await B.tap('#micBtn'); await B.waitForTimeout(300);
   ok('mic: no apaga el micrófono', await B.evaluate(() => !__game.rtc.mic) && /no/.test(await B.textContent('#micBtn')));

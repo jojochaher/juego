@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.6';
+const VERSION = 'v10.6.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -964,7 +964,7 @@ function ui() {
   show($('menuBtn'), started);
   show($('salaBtn'), started);
   show($('micBtn'), started && sala.active);
-  show($('caraBtn'), sala.active);
+  rtcPintar();   // la carita de "cara apagada" (solo en sala)
   show(gyroBtn, gyroMode);
   show($('opcAtajos'), !TACTIL);
   show(distEl, canEdit);
