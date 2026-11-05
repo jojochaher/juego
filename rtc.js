@@ -363,12 +363,20 @@ function rtcCaraDe(h, v, aspect, redonda, congelar) {
   gl.bindTexture(gl.TEXTURE_2D, t.tex);
   const fmt = redonda ? gl.RGBA : gl.RGB;
   gl.texImage2D(gl.TEXTURE_2D, 0, fmt, fmt, gl.UNSIGNED_BYTE, t.c);
-  t.ok = true;
+  t.ok = true; t.cuando = performance.now();
   return t.tex;
 }
 function rtcCaraTex(id, aspect, redonda, congelar) {
   const p = rtc.peers.get(id);
   return p ? rtcCaraDe(p, p.video, aspect, redonda, congelar) : null;
+}
+// el último cuadro de su cara (para las caritas del borde de la pantalla): el lienzo que se actualizó más reciente y cuándo
+function rtcCaraLienzo(id) {
+  const p = rtc.peers.get(id);
+  if (!p) return null;
+  const ts = [p.caraR, p.caraQ].filter(t => t && t.ok);
+  if (!ts.length) return null;
+  return ts.reduce((a, b) => (b.cuando || 0) > (a.cuando || 0) ? b : a);   // { c: lienzo, cuando }
 }
 // tu propia cara (para verte en el editor de personaje)
 const rtcYo = {};

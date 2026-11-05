@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.8';
+const VERSION = 'v10.9';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -479,20 +479,71 @@ function fisica(dt) {
       }
     }
   }
-  // piso: el más alto que esté abajo de los pies (o apenas arriba: escalón)
-  let suelo = 0;
-  for (const w of ws) {
-    const n = normal(w);
-    if (Math.abs(n[1]) <= 0.7) continue;
-    const y = w.c[1] - (n[0] * (pos[0] - w.c[0]) + n[2] * (pos[2] - w.c[2])) / n[1];
-    if (y > pies + ESCALON || y <= suelo) continue;
-    const d = sub([pos[0], y, pos[2]], w.c), m = 0.08;
-    if (Math.abs(dot(d, w.r)) <= w.w / 2 + m && Math.abs(dot(d, w.u)) <= w.h / 2 + m) suelo = y;
-  }
+  const suelo = sueloEn(pos[0], pos[2], pies, ws);
   if (pies <= suelo + 0.001) { pies = suelo; velY = 0; }            // parado (o subió un escalón)
   else { velY -= GRAVEDAD * dt; pies = Math.max(suelo, pies + velY * dt); if (pies === suelo) velY = 0; }
   pos[1] = pies + EYE;
   if (pos.every(Number.isFinite)) posBuena = pos.slice();
+}
+
+// piso: el más alto que esté abajo de los pies (o apenas arriba: escalón)
+function sueloEn(x, z, pies, ws) {
+  let suelo = 0;
+  for (const w of ws) {
+    const n = normal(w);
+    if (Math.abs(n[1]) <= 0.7) continue;
+    const y = w.c[1] - (n[0] * (x - w.c[0]) + n[2] * (z - w.c[2])) / n[1];
+    if (y > pies + ESCALON || y <= suelo) continue;
+    const d = sub([x, y, z], w.c), m = 0.08;
+    if (Math.abs(dot(d, w.r)) <= w.w / 2 + m && Math.abs(dot(d, w.u)) <= w.h / 2 + m) suelo = y;
+  }
+  return suelo;
+}
+// ¿alguna foto corta el segmento de a a b?
+function tapado(a, b, ws) {
+  const d = sub(b, a);
+  for (const w of ws) {
+    const n = cross(w.r, w.u), den = dot(d, n);
+    if (Math.abs(den) < 1e-9) continue;
+    const t = dot(sub(w.c, a), n) / den;
+    if (t <= 0 || t >= 1) continue;
+    const p = sub(add(a, mul(d, t)), w.c);
+    if (Math.abs(dot(p, w.r)) <= w.w / 2 + 0.05 && Math.abs(dot(p, w.u)) <= w.h / 2 + 0.05) return true;
+  }
+  return false;
+}
+// ir al lado de alguien (v10.9, propuesta 13: encontrarse): a 1,5 m, delante suyo si se puede, en un lugar
+// del mismo piso y sin una pared en el medio (así quedan en el mismo cuarto), y mirándolo.
+// q = sus ojos, yaw = para dónde mira. Devuelve false si los datos no sirven.
+function irHacia(q, yaw) {
+  if (!finito3(q) || !Number.isFinite(yaw)) return false;
+  if (held && held.aim) finishAim();
+  const ws = solidas(), piesQ = Math.max(0, q[1] - EYE);
+  const ojos = piesQ + EYE;
+  let dest = null;
+  buscar: for (const d of [1.5, 0.9]) for (const a of [0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, Math.PI]) {
+    const dir = [-Math.sin(yaw + a), 0, -Math.cos(yaw + a)], lejos = d + CUERPO + 0.1;
+    const x = q[0] + dir[0] * d, z = q[2] + dir[2] * d;
+    if (Math.abs(sueloEn(x, z, piesQ, ws) - piesQ) > 0.1) continue;          // otro piso (o el vacío, si está arriba)
+    let libre = true;
+    for (const h of [EYE, 0.6]) {                                             // a la altura de los ojos y de las rodillas
+      const a0 = [q[0], piesQ + h, q[2]];
+      if (tapado(a0, [q[0] + dir[0] * lejos, piesQ + h, q[2] + dir[2] * lejos], ws)) { libre = false; break; }
+    }
+    if (libre) { dest = [x, z]; break buscar; }
+  }
+  if (!dest) dest = [q[0] - Math.sin(yaw) * 0.6, q[2] - Math.cos(yaw) * 0.6];   // muy encerrado: pegado a él (la física acomoda)
+  pos[0] = dest[0]; pos[1] = ojos; pos[2] = dest[1]; velY = 0;
+  fisica(0);
+  // mirarlo (con el giroscopio el ajuste no es exacto de una: unas vueltas)
+  for (let i = 0; i < 6; i++) {
+    const f = basis().f, d = norm(sub(q, pos));
+    let eh = heading(d) - heading(f); eh = Math.atan2(Math.sin(eh), Math.cos(eh));
+    if (Math.hypot(d[0], d[2]) < 0.05) eh = 0;
+    yawOff += eh;
+    pitchOff = clamp(pitchOff + Math.asin(clamp(d[1], -1, 1)) - Math.asin(clamp(f[1], -1, 1)), -1.4, 1.4);
+  }
+  return true;
 }
 
 // ---------- grilla: alinear lo que está en la mano ----------
@@ -1556,6 +1607,7 @@ function draw(now) {
       escena(cam.b, dt, yo);
     } finally { pos[0] = yo[0]; pos[1] = yo[1]; pos[2] = yo[2]; FOVX = fovTuyo; }
   } else escena(b, dt, null);
+  salaLejos(b);   // las caritas del borde (los de la sala que no se ven)
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 

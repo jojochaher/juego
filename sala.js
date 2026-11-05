@@ -365,6 +365,9 @@ function salaPersona(id, d) {
     sala.gente.set(id, p);
   }
   p.target = { p: d.p, yaw: d.yaw || 0, pitch: d.pitch || 0 };
+  // un salto grande (fue con alguien, o volvió de una reconexión): aparece ahí, sin cruzar el museo flotando
+  const salto = finito3(d.p) && finito3(p.disp.p) && Math.hypot(d.p[0] - p.disp.p[0], d.p[1] - p.disp.p[1], d.p[2] - p.disp.p[2]) > 4;
+  if (salto) p.disp.p = d.p.slice();
   p.col = d.col || [0.8, 0.8, 0.8];
   p.cam = !!d.cam;
   p.bq = !!d.bq;               // tiene el bloque vacío equipado (v10.6)
@@ -374,6 +377,7 @@ function salaPersona(id, d) {
     const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), mid: d.mid || null };
     if (!p.mano || p.mano.mid !== t.mid) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };
     p.manoT = t;
+    if (salto) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };   // lo que tiene en la mano también salta
   } else { p.mano = p.manoT = null; }
   p.t = d.t || Date.now();
   p.visto = Date.now();
@@ -476,6 +480,140 @@ function salaManoDe(id, p, k) {
         else drawFramed({ ...pose, uv: FULL }, salaOscuro(), p.col);
       }
     }
+}
+
+// ---------- encontrarse (v10.9, propuesta 13 de José, parte 1) ----------
+// cada uno que no se ve en la pantalla aparece como una carita en el borde (su cara en vivo, o su color),
+// del lado para donde está, con la distancia. Tocarla ofrece "ir": aparecés al lado suyo, mirándolo.
+const salaLejosEl = document.getElementById('lejos'), salaIrEl = document.getElementById('lejosIr');
+const salaCaritas = new Map();      // id -> { el, cv, x, fl, m, sx, sy }
+let salaElegido = null, salaElegidoHasta = 0;
+function salaCarita(id) {
+  let c = salaCaritas.get(id);
+  if (c) return c;
+  const el = document.createElement('div'); el.className = 'lejos';
+  el.innerHTML = '<canvas width="64" height="64"></canvas><div class="giro"><div class="fl"></div></div><span class="m"></span>';
+  el.addEventListener('pointerdown', e => e.stopPropagation());
+  el.addEventListener('click', () => salaElegir(salaElegido === id ? null : id));
+  salaLejosEl.appendChild(el);
+  c = { el, cv: el.querySelector('canvas'), giro: el.querySelector('.giro'), fl: el.querySelector('.fl'), m: el.querySelector('.m'), visible: false, tx: '' };
+  c.x = c.cv.getContext('2d');
+  salaCaritas.set(id, c);
+  return c;
+}
+function salaElegir(id) {
+  salaElegido = id; salaElegidoHasta = Date.now() + 6000;
+  salaIrEl.style.display = id ? '' : 'none';
+}
+salaIrEl.addEventListener('pointerdown', e => e.stopPropagation());
+salaIrEl.addEventListener('click', () => { const id = salaElegido; salaElegir(null); if (id) salaIr(id); });
+document.addEventListener('pointerdown', e => {   // tocar en otro lado cierra la opción (y el toque sigue de largo)
+  if (salaElegido && !salaIrEl.contains(e.target) && !salaLejosEl.contains(e.target)) salaElegir(null);
+}, true);
+function salaIr(id) {
+  const p = sala.gente.get(id);
+  if (!p || !sala.active) return;
+  if (!irHacia(p.target.p, p.target.yaw)) return;
+  diag('sala: fui con ' + id.slice(0, 4));
+  buzz(10);
+  showHint('acá está');
+  sala.ultimoEstado = ''; salaEnviarPresencia();   // que te vea llegar ya
+}
+const salaRgb = (c, k = 1) => `rgb(${c.map(v => Math.round(clamp(v * k, 0, 1) * 255)).join(',')})`;
+function salaLejosPintar(c, id, p) {
+  const x = c.x, col = Array.isArray(p.col) && p.col.length === 3 && p.col.every(Number.isFinite) ? p.col : [0.8, 0.8, 0.8];
+  const tx = salaRgb(col);
+  if (c.tx !== tx) { c.tx = tx; c.cv.style.borderColor = tx; c.fl.style.borderLeftColor = tx; }
+  const t = typeof rtcCaraLienzo === 'function' ? rtcCaraLienzo(id) : null, cara = t && t.c;
+  const clave = tx + (t ? t.cuando : '-');
+  if (c.clave === clave) return;          // la misma cara (o la carita de color): no hace falta redibujar
+  c.clave = clave;
+  x.fillStyle = salaRgb(col, cara ? 0.35 : 0.8); x.fillRect(0, 0, 64, 64);
+  if (cara && cara.width && cara.height) {
+    const k = Math.max(64 / cara.width, 64 / cara.height), w = cara.width * k, h = cara.height * k;   // cubrir el círculo
+    x.drawImage(cara, (64 - w) / 2, (64 - h) / 2, w, h);
+  } else {                                // sin cara: una carita de su color
+    x.fillStyle = 'rgba(0,0,0,0.6)';
+    x.beginPath(); x.arc(24, 27, 3.5, 0, Math.PI * 2); x.arc(40, 27, 3.5, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = 'rgba(0,0,0,0.6)'; x.lineWidth = 3.5; x.lineCap = 'round';
+    x.beginPath(); x.arc(32, 34, 11, 0.25 * Math.PI, 0.75 * Math.PI); x.stroke();
+  }
+}
+// las zonas que tapa el iPhone (env(safe-area-inset-*)), leídas de un elemento de prueba cada 2 s
+let salaSeguroV = { t: 0, r: 0, b: 0, l: 0 }, salaSeguroT = 0;
+function salaSeguro() {
+  const now = Date.now();
+  if (now - salaSeguroT < 2000) return salaSeguroV;
+  salaSeguroT = now;
+  const cs = getComputedStyle(document.getElementById('seguro')), n = v => parseFloat(v) || 0;
+  salaSeguroV = { t: n(cs.paddingTop), r: n(cs.paddingRight), b: n(cs.paddingBottom), l: n(cs.paddingLeft) };
+  return salaSeguroV;
+}
+function salaLejos(b) {
+  const activo = sala.active && started && !pjVista;
+  const vistos = new Set();
+  if (activo && sala.gente.size) {
+    const [tx, ty] = tans(), cx = W / 2, cy = H / 2, sg = salaSeguro();
+    // el marco donde van las caritas: lejos de tu cara y los botones de arriba, del joystick y los botones de abajo,
+    // de la barra de distancia (cuando está) y de las zonas que tapa el iPhone (notch, barrita de abajo)
+    const x0 = 34 + sg.l, x1 = W - 34 - sg.r - (distEl.style.display !== 'none' ? 50 : 0);
+    let y0 = 120 + sg.t, y1 = H - 196 - sg.b;
+    if (y1 - y0 < 60) { y0 = cy - 30; y1 = cy + 30; }
+    const puestos = [], ws = solidas();
+    for (const [id, p] of sala.gente) {
+      const q = p.disp && p.disp.p;
+      if (!finito3(q)) continue;
+      // ¿se ve? (la cabeza o el medio del cuerpo adentro de la pantalla y sin una foto en el medio)
+      const cuerpo = [q[0], q[1] - 0.7, q[2]];
+      const enPantalla = v => { const l = toLocalV(b, sub(v, pos)); return l[2] > 0.05 && Math.abs(l[0] / l[2]) < tx * 0.95 && Math.abs(l[1] / l[2]) < ty * 0.95; };
+      const enCuadro = enPantalla(q) || enPantalla(cuerpo);
+      // (con una foto en la mano no: la carita en el medio de la pantalla estorbaría para editar)
+      if (enCuadro && (held || !tapado(pos, q, ws) || !tapado(pos, cuerpo, ws))) continue;
+      const l = toLocalV(b, sub(q, pos));
+      let dx = l[0] / tx, dy = -l[1] / ty, sx, sy, flecha = true;
+      if (Math.hypot(dx, dy) < 1e-3) { dx = 0; dy = 1; }                      // justo atrás: abajo
+      if (enCuadro && l[2] > 0.05) {
+        // atrás de una pared pero para este lado: la carita va donde está (sin flecha)
+        sx = clamp(cx + l[0] / l[2] / tx * cx, x0, x1); sy = clamp(cy - l[1] / l[2] / ty * cy, y0, y1); flecha = false;
+      } else {
+        // del centro hacia él, hasta el borde del marco
+        const k = Math.min(dx > 0 ? (x1 - cx) / dx : dx < 0 ? (x0 - cx) / dx : Infinity, dy > 0 ? (y1 - cy) / dy : dy < 0 ? (y0 - cy) / dy : Infinity);
+        sx = cx + dx * k; sy = cy + dy * k;
+      }
+      // si se encima con otra, correrla a lo largo del borde (para un lado o para el otro)
+      const enLado = Math.abs(sx - x0) < 1 || Math.abs(sx - x1) < 1;
+      const libre = (x, y) => !puestos.some(o => Math.hypot(o[0] - x, o[1] - y) < 52);
+      if (!libre(sx, sy)) {
+        for (const o of [54, -54, 108, -108, 162, -162]) {
+          const nx = enLado ? sx : clamp(sx + o, x0, x1), ny = enLado ? clamp(sy + o, y0, y1) : sy;
+          if (libre(nx, ny)) { sx = nx; sy = ny; break; }
+        }
+      }
+      puestos.push([sx, sy]);
+      const c = salaCarita(id);
+      vistos.add(id);
+      if (!c.visible) { c.el.style.display = ''; c.visible = true; }
+      c.el.style.transform = `translate(${sx.toFixed(1)}px,${sy.toFixed(1)}px)`;
+      c.giro.style.transform = `rotate(${Math.atan2(dy, dx).toFixed(3)}rad)`;
+      if (c.flecha !== flecha) { c.flecha = flecha; c.giro.style.display = flecha ? '' : 'none'; }
+      const m = Math.max(1, Math.round(len(sub(q, pos)))) + ' m';
+      if (c.m.textContent !== m) c.m.textContent = m;
+      c.sx = sx; c.sy = sy; c.dx = dx / Math.hypot(dx, dy); c.dy = dy / Math.hypot(dx, dy);
+      salaLejosPintar(c, id, p);
+    }
+  }
+  for (const [id, c] of salaCaritas) {
+    if (vistos.has(id)) continue;
+    if (!sala.gente.has(id)) { c.el.remove(); salaCaritas.delete(id); }
+    else if (c.visible) { c.el.style.display = 'none'; c.visible = false; }
+  }
+  // la opción "ir", al lado de la carita elegida (hacia adentro de la pantalla)
+  if (salaElegido && (!vistos.has(salaElegido) || Date.now() > salaElegidoHasta)) salaElegir(null);
+  if (salaElegido) {
+    const c = salaCaritas.get(salaElegido);
+    salaIrEl.style.transform = `translate(${(c.sx - c.dx * 66).toFixed(1)}px,${(c.sy - c.dy * 58).toFixed(1)}px) translate(-50%,-50%)`;
+  }
+  salaLejosEl.style.display = vistos.size ? '' : 'none';
 }
 
 // ---------- mis salas: registro en este dispositivo + ver fotos + borrar ----------
