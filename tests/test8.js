@@ -54,8 +54,8 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   await drag1(40, cy+200, 140, cy+200);
   ok('recortar: arrastrar lejos de la foto sigue mirando', Math.abs(await G(() => heading(basis().f)) - y0) > 0.2);
   await G(() => __game.look(0,0));
-  // encuadre: zoom y pan
-  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="encuadre"]');
+  // recortar adentro de la foto (lo que era encuadre): zoom y pan
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('#reset'); await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); if (await G(() => __game.mode) !== 'recortar') await pg.tap('[data-m="recortar"]');
   await two(0, 50, 0, 120);
   const z = await G(() => __game.preview.uv);
   ok(`encuadre: pellizco hace zoom adentro (uv ${z.map(v=>v.toFixed(2))})`, (z[2]-z[0]) < 0.6 && Math.abs((z[0]+z[2])/2 - 0.5) < 0.01);
@@ -92,7 +92,7 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   // agarrar, encuadre, soltar, recargar
   await G(() => __game.look(10, 5)); await pg.waitForTimeout(100);
   await pg.touchscreen.tap(tgt[0], tgt[1]); await pg.waitForTimeout(1200);
-  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); await pg.tap('[data-m="encuadre"]'); await two(0, 50, 0, 100);
+  await pg.evaluate(() => { if (getComputedStyle(document.getElementById('modes')).display === 'none') document.getElementById('ajustar').click(); }); if (await G(() => __game.mode) !== 'recortar') await pg.tap('[data-m="recortar"]'); await two(0, 50, 0, 100);
   const uvE = await G(() => __game.held.L.uv);
   await pg.tap('#drop'); await pg.waitForTimeout(500);
   await pg.reload(); await pg.waitForTimeout(800);

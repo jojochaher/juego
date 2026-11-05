@@ -417,4 +417,10 @@ document.getElementById('caraBtn').addEventListener('click', () => {
   if (rtc.caraOn && camOn) showHint('tu cara se ve cuando guardás la cámara de fotos');
   rtcMedios();
 });
+// tocar tu cara (arriba a la izquierda) la apaga; se vuelve a prender desde ☰ → cara
+document.getElementById('yoCara').addEventListener('click', () => {
+  if (!rtc.caraOn) return;
+  document.getElementById('caraBtn').click();
+  showHint('cara apagada · ☰ → cara para prenderla');
+});
 rtcPintar();

@@ -2,9 +2,9 @@
 // Mirás con el giroscopio y ajustás arrastrando con el dedo. Te movés con el joystick.
 // Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste) viaja pegado
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
-// encuadre (pan y zoom adentro de la foto), girar (sobre su eje).
+// recortar (bordes; adentro, pan y zoom de la imagen), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.4';
+const VERSION = 'v10.5';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -262,10 +262,69 @@ function addWork(o, img) {
   else { o = { ...o, r: norm(o.r), u: norm(o.u) }; }
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: ih / iw,
-              tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota };
+              tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio };
   setBuf(w);
   works.push(w);
   return w;
+}
+
+// ---------- bloques vacíos: se ponen ahora y se llenan con una foto después ----------
+const VACIO_IMG = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = '#3a3b44'; x.fillRect(0, 0, 128, 128);
+  x.strokeStyle = '#6b6d7a'; x.lineWidth = 6; x.strokeRect(3, 3, 122, 122);
+  x.lineWidth = 5; x.lineCap = 'round'; x.beginPath(); x.moveTo(64, 46); x.lineTo(64, 82); x.moveTo(46, 64); x.lineTo(82, 64); x.stroke();
+  return c;
+})();
+// recorte centrado de una imagen (o del video) con la proporción alto/ancho pedida, a lo sumo de 1024 px
+function recorteCentrado(src, aspecto) {
+  const sw = src.naturalWidth || src.videoWidth || src.width, sh = src.naturalHeight || src.videoHeight || src.height;
+  let cw = sw, ch = sw * aspecto;
+  if (ch > sh) { ch = sh; cw = sh / aspecto; }
+  const k = Math.min(1, 1024 / Math.max(cw, ch));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(cw * k)); c.height = Math.max(1, Math.round(ch * k));
+  c.getContext('2d').drawImage(src, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, c.width, c.height);
+  return c;
+}
+// uv para mostrar el video de la cámara centrado con la proporción de un bloque (mientras lo tenés en la mano)
+function uvCentrado(aspecto) {
+  const va = video.videoWidth ? video.videoHeight / video.videoWidth : 1;
+  if (va > aspecto) { const k = aspecto / va; return [0, (1 - k) / 2, 1, (1 + k) / 2]; }
+  const k = va / aspecto; return [(1 - k) / 2, 0, (1 + k) / 2, 1];
+}
+function ponerBloque() {
+  if (!started || held || !camOn) return;
+  const p = previewPose(basis(), true);
+  const lado = Math.max(p.w, p.h);
+  // cuadrado, del lado más largo de la vista previa, con la misma esquina de abajo a la izquierda
+  const esq = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
+  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: add(add(esq, mul(p.r, lado / 2)), mul(p.u, lado / 2)), r: p.r, u: p.u, w: lado, h: lado, uv: FULL.slice(), vacio: true };
+  addWork(o, VACIO_IMG);
+  if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
+  else store('readwrite', s => s.put({ ...o, blob: null })).catch(() => {});
+  buzz(12);
+  showHint('bloque vacío: agarralo para ponerle una foto');
+}
+// llenar el bloque que tenés en la mano con una imagen (foto de la cámara o de la galería). Se guarda recién al soltarlo
+// (con la pose final: si se guardaba al llenarlo, una subida lenta pisaba después la pose de soltar); cancelar lo deja vacío.
+function llenarBloque(src) {
+  if (!held || !held.work.vacio) return;
+  cur();
+  const w = held.work, L = held.L, asp = L.h / L.w;
+  const c = recorteCentrado(src, asp);
+  w.relleno = { texVieja: w.tex, c };
+  w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice();
+  flash.style.transition = 'none'; flash.style.opacity = 0.7;
+  requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
+  buzz(15);
+  ui();
+}
+// si se soltó sin ✓ (cancelar, la sala lo sacó de la mano...), el bloque vuelve a estar vacío
+function deshacerRelleno(w) {
+  if (!w.relleno) return;
+  gl.deleteTexture(w.tex); w.tex = w.relleno.texVieja; w.vacio = true; w.relleno = null;
 }
 
 // ---------- lo que tenés en la mano ----------
@@ -373,10 +432,11 @@ function snapPose(p) {
   const corner = c0.map(Math.round);
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
 }
-// guías: la grilla de 1 m en 3D alrededor de lo que tenés en la mano, hasta 1 m afuera de la foto (GUIA_ESP).
+// guías: la grilla de 1 m en 3D alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R (1 m) de la foto
+// (alfa según la distancia a la foto: las líneas a 1 m o más ya no se ven, así que no se dibujan).
 // Los 4 bordes de la foto, prolongados, van más marcados; las demás líneas, más tenues cuanto más lejos.
-// Todas se desvanecen en las puntas (GUIA_COLA más allá de la foto). No se dibujan las que cruzan la cara de la foto.
-const GUIA_ESP = 1, GUIA_COLA = 1.5;
+// Todas se desvanecen en las puntas. No se dibujan las que cruzan la cara de la foto.
+const GUIA_R = 1;
 function guiasGrilla(p, col) {
   const esquina = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
   const otra = add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h));
@@ -396,12 +456,14 @@ function guiasGrilla(p, col) {
     drawQuad(scratch, quadData(mid, norm(lado), tt, metersPerPx(Math.max(0.3, len(sub(mid, pos)))) * px, largo), white, col, alfa, fade);
   };
   // una línea a lo largo del eje e, que pasa por q (las otras dos coordenadas); con núcleo (a lo largo de la foto) y colas
-  const linea = (e, q, px, alfa, conNucleo) => {
+  // d = a qué distancia de la foto pasa la línea (de costado); las colas se apagan donde quedan a GUIA_R de la foto
+  const linea = (e, q, px, alfa, conNucleo, d) => {
     const en = v => { const r = q.slice(); r[e] = v; return r; };
+    const cola = Math.sqrt(Math.max(0, GUIA_R * GUIA_R - d * d));
     if (conNucleo) tramo(en(lo[e]), en(hi[e]), px, alfa);
-    tramo(en(hi[e]), en(hi[e] + GUIA_COLA), px, alfa, [0, 1]);          // +u = la punta: se apaga
-    const piso = e === 1 ? Math.max(0, lo[e] - GUIA_COLA) : lo[e] - GUIA_COLA;   // las verticales no bajan del piso
-    const f = 1 - (lo[e] - piso) / GUIA_COLA;
+    tramo(en(hi[e]), en(hi[e] + cola), px, alfa, [0, 1]);          // +u = la punta: se apaga
+    const piso = e === 1 ? Math.max(0, lo[e] - cola) : lo[e] - cola;   // las verticales no bajan del piso
+    const f = cola > 0 ? 1 - (lo[e] - piso) / cola : 0;
     tramo(en(piso), en(lo[e]), px, alfa, [1, f]);
   };
   // los 4 bordes, prolongados
@@ -409,21 +471,21 @@ function guiasGrilla(p, col) {
   for (const e of [0, 1, 2]) {
     if (e === t) continue;
     const o = 3 - e - t;                               // el otro eje del plano de la foto
-    for (const v of [lo[o], hi[o]]) { const q = [0, 0, 0]; q[t] = lo[t]; q[o] = v; bordes.push([e, o, v]); linea(e, q, 2.2, 0.85, true); }
+    for (const v of [lo[o], hi[o]]) { const q = [0, 0, 0]; q[t] = lo[t]; q[o] = v; bordes.push([e, o, v]); linea(e, q, 2.2, 0.85, true, 0); }
   }
   // la grilla
-  const rango = i => { const a = Math.floor(lo[i] + E) - GUIA_ESP, b = Math.ceil(hi[i] - E) + GUIA_ESP; return [i === 1 ? Math.max(0, a) : a, b]; };
+  const rango = i => { const a = Math.floor(lo[i] + E) - GUIA_R, b = Math.ceil(hi[i] - E) + GUIA_R; return [i === 1 ? Math.max(0, a) : a, b]; };
   for (const e of [0, 1, 2]) {
     const b = (e + 1) % 3, c = (e + 2) % 3, [b0, b1] = rango(b), [c0, c1] = rango(c);
     for (let vb = b0; vb <= b1; vb++) for (let vc = c0; vc <= c1; vc++) {
       const q = [0, 0, 0]; q[b] = vb; q[c] = vc;
       const d = Math.hypot(Math.max(0, lo[b] - vb, vb - hi[b]), Math.max(0, lo[c] - vc, vc - hi[c]));
-      if (d > GUIA_ESP + E) continue;
+      if (d > GUIA_R - 0.05) continue;                                // a 1 m ya no se ve
       if (bordes.some(([be, bo, bv]) => be === e && igual(q[t], lo[t]) && igual(q[bo], bv))) continue;   // ya es un borde
       let conNucleo = true;
       if (e === t) { if (dentro(b, vb) && dentro(c, vc)) continue; }          // atraviesa la foto de frente
       else if (igual(q[t], lo[t]) && dentro(3 - e - t, q[3 - e - t])) conNucleo = false;   // va por encima de la cara de la foto
-      linea(e, q, 1.2, 0.3 * (1 - d / (GUIA_ESP + 0.6)), conNucleo);
+      linea(e, q, 1.2, 0.3 * (1 - d / GUIA_R), conNucleo, d);
     }
   }
   gl.depthMask(true);
@@ -454,9 +516,12 @@ function rollBy(L, a) {   // giro en el plano de la foto
   const n = norm(cross(L.r, L.u));
   L.r = norm(rotAxis(L.r, n, a)); L.u = norm(rotAxis(L.u, n, a));
 }
-function spinBy(L, ax, ay) {  // girar sobre su propio eje vertical (ax) y horizontal (ay)
-  L.r = norm(rotAxis(L.r, L.u, ax));
-  L.u = norm(rotAxis(L.u, L.r, ay));
+// girar como una bola: alrededor del eje vertical (ax) y horizontal (ay) DE LA PANTALLA, no de la foto
+// (con los de la foto, después de darla vuelta 180° el arrastre vertical giraba al revés). L está en coordenadas de la cámara.
+function spinBy(L, ax, ay) {
+  const Y = [0, 1, 0], X = [1, 0, 0];
+  L.r = norm(rotAxis(rotAxis(L.r, Y, ax), X, ay));
+  L.u = norm(rotAxis(rotAxis(L.u, Y, ax), X, ay));
   L.r = norm(cross(L.u, cross(L.r, L.u)));   // re-ortogonalizar
 }
 // zoom del contenido: achica/agranda la ventana uv alrededor de su centro
@@ -540,10 +605,15 @@ function stepAim(dt) {
   pitchOff = clamp(pitchOff + ee * k, -1.4, 1.4);
   if ((Math.abs(eh) < 0.002 && Math.abs(ee) < 0.002) || a.t > 0.9) finishAim();
 }
-function releaseHold() { held = null; setMode('mover'); if (ajustando) setAjustar(false); ui(); }
+function releaseHold() {
+  const w = held && held.work;
+  held = null;
+  if (w) { deshacerRelleno(w); if (sala.active) salaSoltado(w); }
+  setMode('mover'); if (ajustando) setAjustar(false); ui();
+}
 function clearWorks() {
   held = null;
-  for (const w of works) { gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
+  for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
   works.length = 0;
 }
 
@@ -552,10 +622,19 @@ function drop() {
   cur();
   const w = held.work;
   Object.assign(w, heldPose(basis(), true));
+  const relleno = w.relleno; w.relleno = null;
+  if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
-  if (sala.active) salaSavePose(w);
-  else store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
+  if (sala.active) relleno ? salaShoot({ id: w.id, ...pose }, relleno.c, w) : salaSavePose(w);
+  else {
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
+    // el bloque lleno: la imagen se agrega al registro que haya (si mientras tanto lo borraste, no lo revive)
+    if (relleno) relleno.c.toBlob(blob => {
+      if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
+      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false }); }).catch(() => {});
+    }, 'image/jpeg', 0.85);
+  }
   buzz(12);
   releaseHold();
 }
@@ -564,6 +643,7 @@ function trash() {
   if (!held) return;
   const w = held.work;
   works.splice(works.indexOf(w), 1);
+  if (w.relleno) { gl.deleteTexture(w.relleno.texVieja); w.relleno = null; }
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
   if (sala.active) salaRemove(w);
   else store('readwrite', s => s.delete(w.id)).catch(() => {});
@@ -625,6 +705,7 @@ async function loadWorks() {
   const keys = await store('readonly', s => s.getAllKeys());
   for (const k of keys || []) {
     const o = await store('readonly', s => s.get(k));
+    if (o && o.vacio && !o.blob) { if (!sala.active) addWork(o, VACIO_IMG); continue; }
     if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
     const img = new Image(); img.src = url;
@@ -735,8 +816,7 @@ function showHint(t, stay) {
 
 const MODE_HINT = {
   mover: 'dos dedos: tamaño y giro · barra: distancia',
-  recortar: 'arrastrá un borde o una esquina',
-  encuadre: 'un dedo mueve la imagen · dos dedos zoom',
+  recortar: 'borde o esquina: recortar · adentro: mover la imagen · dos dedos: zoom',
   girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
 };
 function setMode(m) {
@@ -786,6 +866,9 @@ function ui() {
   show(equipBtn, started && !camOn && !holding);
   show(unequipBtn, started && camOn && !holding);
   show($('girarCam'), started && camOn && !holding && TACTIL && camVarias);
+  show($('bloque'), started && camUp && !holding);
+  const vacio = holding && held.work.vacio;
+  show($('llenarFoto'), vacio && camUp); show($('llenarGaleria'), vacio);
   $('girarCam').classList.toggle('ocupado', camStarting);
   show(dropBtn, started && holding);
   show(trashBtn, started && holding);
@@ -840,6 +923,17 @@ paintFov();
 
 // ---------- equipar / guardar la cámara ----------
 const equipBtn = $('equip'), unequipBtn = $('unequip');
+$('bloque').addEventListener('click', ponerBloque);
+$('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); });
+$('llenarGaleria').addEventListener('click', () => $('bloqueArchivo').click());
+$('bloqueArchivo').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  const url = URL.createObjectURL(f), img = new Image();
+  try { img.src = url; await img.decode(); llenarBloque(img); }
+  catch (err) { showHint('no pude abrir esa imagen'); diag('bloque: no pude abrir la imagen (' + (err && err.message) + ')'); }
+  finally { URL.revokeObjectURL(url); }
+});
 $('girarCam').addEventListener('click', camGirar);
 equipBtn.addEventListener('click', () => setCam(true));
 unequipBtn.addEventListener('click', () => setCam(false));
@@ -957,7 +1051,7 @@ function tecladoMover() {
 }
 const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
   'C: cámara · espacio: sacar foto / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
-  '1: mover · 2-4: recortar, encuadre, girar · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
+  '1: mover · 2: recortar · 3: girar · B: bloque vacío · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
 const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
 window.addEventListener('keydown', e => {
@@ -978,9 +1072,10 @@ window.addEventListener('keydown', e => {
   }
   else if (c === 'Delete' || c === 'Backspace') click(trashBtn);
   else if (c === 'KeyC' && !held) click(camOn ? unequipBtn : equipBtn);
+  else if (c === 'KeyB' && !held) ponerBloque();
   else if (c === 'KeyG') { if (visible($('edicion'))) grillaBtn.click(); }
   else if (c === 'KeyH') showHint(ATAJOS);
-  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'encuadre', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
+  else if (/^Digit[1-3]$/.test(c)) { const m = ['mover', 'recortar', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
   if (c.startsWith('Arrow')) e.preventDefault();
 });
 window.addEventListener('keyup', e => teclas.delete(e.code));
@@ -1020,6 +1115,16 @@ function edgesAt(L, x, y) {
   if (dy < tol && (dy < dx || dy < esqY)) e[dt <= db ? 't' : 'b'] = true;
   return (e.l || e.r || e.t || e.b) ? e : null;
 }
+// ¿el dedo cae adentro de lo que se ve en la mano? (con la grilla, de la pose alineada, que pasa a ser la de la mano:
+// así la imagen se mueve a la par del dedo)
+function dentroDeLoQueSeVe(L, x, y) {
+  let M = L;
+  if (grilla) { const b = basis(), p = snapPose(worldPose(b, L)); M = { c: toLocalV(b, sub(p.c, pos)), r: toLocalV(b, p.r), u: toLocalV(b, p.u), w: p.w, h: p.h, uv: L.uv.slice() }; }
+  const q = touchOnHeld(M, x, y);
+  if (!q || Math.abs(q[0]) > M.w / 2 || Math.abs(q[1]) > M.h / 2) return false;
+  if (M !== L) Object.assign(L, M);
+  return true;
+}
 // el borde que se está recortando (para dibujarlo de otro color y, con la grilla, mostrar la foto sin alinear mientras tanto)
 function recorteActivo() { if (mode !== 'recortar') return null; for (const t of touches.values()) if (t.crop) return t.crop; return null; }
 // con la grilla, al empezar a recortar se toma el tamaño y lugar alineados que se ven, así el borde queda bajo el dedo
@@ -1036,13 +1141,16 @@ canvas.addEventListener('pointerdown', e => {
   if (!started) return;
   canvas.setPointerCapture(e.pointerId);
   const t = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, crop: null };
-  if (mode === 'recortar' && touches.size === 0) t.crop = recorteDesdeLoQueSeVe(cur(), e.clientX, e.clientY);   // un solo dedo recorta
+  if (mode === 'recortar' && touches.size === 0) {        // un solo dedo recorta; adentro de la foto, mueve la imagen
+    t.crop = recorteDesdeLoQueSeVe(cur(), e.clientX, e.clientY);
+    if (!t.crop) t.pan = dentroDeLoQueSeVe(cur(), e.clientX, e.clientY);
+  }
   touches.set(e.pointerId, t);
   if (touches.size === 2) {
     const g = twoFingers();
     const L = cur();
     gesture = { d0: g.d, a0: g.a, lastD: g.d, lastA: g.a, uv0: L.uv.slice(), giro: 0, girando: false };
-    for (const tt of touches.values()) { tt.moved = true; tt.crop = null; }
+    for (const tt of touches.values()) { tt.moved = true; tt.crop = null; tt.pan = false; }
   }
 });
 
@@ -1064,7 +1172,7 @@ canvas.addEventListener('pointermove', e => {
     else { gesture.giro += da; if (Math.abs(gesture.giro) > 0.17) { gesture.girando = true; giro = gesture.giro - Math.sign(gesture.giro) * 0.17; } }
     if (mode === 'mover') { scaleBy(L, k); if (giro) rollBy(L, -giro); }
     else if (mode === 'girar') { if (giro) rollBy(L, -giro); }
-    else if (mode === 'encuadre') zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
+    else if (mode === 'recortar') zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
     return;
   }
   if (!t.moved && Math.hypot(t.x - t.x0, t.y - t.y0) > 8) t.moved = true;
@@ -1075,7 +1183,7 @@ canvas.addEventListener('pointermove', e => {
     if (p) cropTo(L, t.crop, p[0], p[1]);
     return;
   }
-  if (mode === 'encuadre') {
+  if (mode === 'recortar' && t.pan) {
     // el dedo arrastra la imagen: proyectar el movimiento sobre los ejes de la foto (por si está girada)
     const mpp = metersPerPx(len(L.c));
     const v = [dx * mpp, -dy * mpp, 0];
@@ -1259,7 +1367,13 @@ function escena(b, dt, yo) {
   else if (held) {
     const p = heldPose(b);
     if (grilla && !held.aim) guiasGrilla(heldPose(b, true), [1, 1, 1]);   // las guías, siempre de donde va a quedar
-    drawFramed(p, held.work.tex, [1, 1, 1], recorteActivo());
+    let tex = held.work.tex;
+    if (held.work.vacio && camOn && camReady && video.readyState >= 2) {   // bloque vacío: muestra la cámara, para sacarle la foto
+      gl.bindTexture(gl.TEXTURE_2D, videoTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
+      tex = videoTex;
+    }
+    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], recorteActivo());
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
