@@ -21,6 +21,13 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   ok('tocarlo de nuevo vuelve a mover', await pg.evaluate(() => __game.mode === 'mover'));
   await pg.tap('[data-m="girar"]'); await pg.tap('#ajustar');
   ok('plegar vuelve a mover', await pg.evaluate(() => __game.mode === 'mover') && !(await pg.isVisible('#modes')));
+  // v10.5.1: guardar la cámara con ajustar abierto; al volver a sacarla empieza plegado
+  await pg.tap('#ajustar'); await pg.tap('[data-m="recortar"]');
+  ok('(ajustar abierto en recortar)', await pg.isVisible('#modes') && await pg.evaluate(() => __game.mode === 'recortar'));
+  await pg.tap('#unequip'); await pg.waitForTimeout(200);
+  ok('guardar la cámara pliega ajustar', await pg.evaluate(() => __game.mode === 'mover') && (await pg.textContent('#ajustar')).includes('▾'));
+  await pg.tap('#equip'); await pg.waitForFunction(() => window.__game.camReady); await pg.waitForTimeout(200);
+  ok('al volver a sacarla, los modos siguen plegados', await pg.isVisible('#edicion') && !(await pg.isVisible('#modes')));
   // menú
   await pg.tap('#menuBtn'); await pg.waitForTimeout(200);
   ok('☰ abre opciones', await pg.isVisible('#opciones'));

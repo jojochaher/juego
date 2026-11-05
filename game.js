@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
 // recortar (bordes; adentro, pan y zoom de la imagen), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.5';
+const VERSION = 'v10.5.1';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -772,7 +772,7 @@ function setCam(on) {
   try { localStorage.setItem('camara', on ? '1' : '0'); } catch (e) {}
   // la cámara de fotos (trasera) y la de tu cara (frontal) no pueden estar prendidas a la vez
   if (on) { rtcSoltarCara(); startCamera(); }
-  else { stopCamera(); if (!held) setMode('mover'); rtcMedios(); }
+  else { stopCamera(); if (!held) { setMode('mover'); if (ajustando) setAjustar(false); } rtcMedios(); }   // guardarla pliega ajustar (como soltar)
   buzz(10);
   ui();
 }
