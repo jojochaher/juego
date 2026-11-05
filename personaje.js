@@ -145,8 +145,9 @@ function pjAbrir() {
   pjVista = { ang: 0.5, yaw0: heading(basis().f) };
   document.getElementById('hint').style.opacity = 0;
   pjPintar();
+  if (typeof ui === 'function') ui();
 }
-function pjCerrar() { pjPanel.style.display = 'none'; pjVista = null; if (voz.escucharme) vozEscucharme(false); }
+function pjCerrar() { pjPanel.style.display = 'none'; pjVista = null; if (voz.escucharme) vozEscucharme(false); if (typeof ui === 'function') ui(); }
 function pjPintar() {
   for (const el of pjPanel.querySelectorAll('[data-cuerpo]')) el.classList.toggle('on', el.dataset.cuerpo === pj.cuerpo);
   for (const el of pjPanel.querySelectorAll('[data-cabeza]')) el.classList.toggle('on', el.dataset.cabeza === pj.cabeza);
@@ -177,8 +178,11 @@ function pjCamara() {
   const ty = tans()[1];
   const alto = innerHeight || 1;
   const arriba = pjPanel.style.display === 'none' ? alto : pjPanel.getBoundingClientRect().top;
-  const frac = Math.min(1, Math.max(0.35, arriba / alto));     // parte de la pantalla que queda libre (arriba)
-  const centroY = 1 - frac;                                    // su centro, en coordenadas de pantalla (-1..1)
+  // el lugar libre va de abajo de los botones de arriba (sala, mic, ☰) hasta el panel: si no, la cabeza queda pegada a los botones
+  const mb = document.getElementById('menuBtn'), techo = mb && mb.offsetParent !== undefined ? Math.max(0, mb.getBoundingClientRect().bottom + 12) : 0;
+  const libre = Math.max(alto * 0.3, arriba - techo);
+  const frac = Math.min(1, libre / alto);                      // parte de la pantalla que queda libre
+  const centroY = 1 - (techo + libre / 2) * 2 / alto;          // su centro, en coordenadas de pantalla (-1..1)
   const cima = pos[1] + (pj.cabeza === 'cubo' ? 0.35 : 0.2) + 0.25 * Math.max(0, pj.forma - 1), pies = pos[1] - EYE;
   const c = (cima + pies) / 2, medio = (cima - pies) / 2;
   const d = medio / (0.72 * frac * ty);                        // que ocupe el 72% del lugar libre

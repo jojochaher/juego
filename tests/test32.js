@@ -132,7 +132,7 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   await pg.evaluate(() => { const L = __game.previewBloque; L.c = [0, 0, 1.5]; L.r = [1, 0, 0]; L.u = [0, 1, 0]; L.w = 0.9; L.h = 0.45; });
   await pg.tap('#shoot'); await pg.waitForTimeout(200);
   await pg.evaluate(() => { pick(__game.works[__game.works.length - 1]); ui(); }); await pg.waitForTimeout(1200);
-  ok('agarrado con la cámara guardada: botón "cámara" y "galería"', (await pg.textContent('#llenarFoto')) === 'cámara' && await vis('llenarGaleria') && !(await pg.evaluate(() => __game.camOn)));
+  ok('agarrado con la cámara guardada: botón "cámara"', (await pg.textContent('#llenarFoto')) === 'cámara' && !(await pg.evaluate(() => __game.camOn)));
   await pg.tap('#llenarFoto'); await pg.waitForFunction(() => window.__game.camReady); await pg.waitForTimeout(300);
   ok('lo abre y pasa a "sacar foto" (el bloque sigue en la mano, la cámara queda equipada)', (await pg.textContent('#llenarFoto')) === 'sacar foto' && await pg.evaluate(() => __game.held && __game.held.work.vacio && !__game.bloqueOn));
   await pg.tap('#llenarFoto'); await pg.waitForTimeout(200);

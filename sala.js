@@ -132,7 +132,7 @@ setInterval(() => {
 }, 10000);
 
 // ---------- obras compartidas ----------
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio'];
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv'];   // iv: cuándo se cambió la imagen (v10.7)
 const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
 
 function salaCambioObras(path, data, type) {
@@ -158,17 +158,27 @@ function salaUpsert(id, pose) {
   sala.borradas.delete(id);
   const w = works.find(x => x.id === id);
   if (w) {
-    if (held && held.work === w) {                      // la estoy editando yo: gana lo mío al soltar
-      if ((w.vacio || w.relleno) && !pose.vacio) w.llenadoAfuera = pose;  // pero si otro le puso foto al bloque, no se la saco al soltar
+    if (held && held.work === w) {                      // la estoy editando yo: gana la pose mía al soltar
+      // pero si otro le cambió la imagen (la llenó, la cambió o la vació), se anota: al soltar se respeta (salvo que la hayas cambiado vos)
+      const vacioAntes = w.relleno ? w.relleno.vacioViejo : w.vacio;
+      if (!!pose.vacio !== !!vacioAntes || (!pose.vacio && pose.iv && pose.iv !== w.iv)) w.llenadoAfuera = pose;
       return;
     }
+    if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
+      const iv = w.iv; Object.assign(w, soloPose(pose)); w.iv = iv; w.vacio = false; delete w.llenadoAfuera;
+      if (!w.uv) w.uv = FULL.slice();
+      setBuf(w); return;
+    }
+    if (pose.vacio && sala.cargando.has(id)) sala.cargando.set(id, pose);   // se estaba bajando una imagen que ya no va
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
+    if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
+    if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; }   // la vaciaron
     Object.assign(w, soloPose(pose));
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     return;
   }
-  if (pose.vacio) { if (!sala.cargando.has(id)) addWork({ id, ...soloPose(pose) }, VACIO_IMG); return; }   // bloque vacío: no hay imagen
+  if (pose.vacio) { if (sala.cargando.has(id)) sala.cargando.set(id, pose); else addWork({ id, ...soloPose(pose) }, VACIO_IMG); return; }   // bloque vacío: no hay imagen
   if (sala.cargando.has(id)) { sala.cargando.set(id, pose); return; }
   sala.cargando.set(id, pose);
   const hashAlPedir = sala.hash;
@@ -179,17 +189,22 @@ function salaUpsert(id, pose) {
     const ultima = sala.cargando.get(id);
     sala.cargando.delete(id);
     if (!sala.active || sala.hash !== hashAlPedir || sala.borradas.has(id) || works.some(x => x.id === id)) return;
-    addWork({ id, ...soloPose(ultima) }, img);
+    addWork({ id, ...soloPose(ultima) }, ultima.vacio ? VACIO_IMG : img);   // mientras bajaba la pudieron vaciar
   }).catch(() => {
+    const ultima = sala.cargando.get(id) || pose;
     sala.cargando.delete(id);
-    setTimeout(() => { if (sala.active && sala.hash === hashAlPedir && !works.some(x => x.id === id) && !sala.borradas.has(id)) salaUpsert(id, pose); }, 1500);
+    if (!sala.active || sala.hash !== hashAlPedir || works.some(x => x.id === id) || sala.borradas.has(id)) return;
+    if (ultima.vacio) { addWork({ id, ...soloPose(ultima) }, VACIO_IMG); return; }
+    setTimeout(() => { if (sala.active && sala.hash === hashAlPedir && !works.some(x => x.id === id) && !sala.borradas.has(id)) salaUpsert(id, ultima); }, 1500);
   });
 }
 
 // un bloque vacío que otro llenó: bajar la imagen y cambiarle la textura (la pose viene con ella)
-function salaLlenarDeAfuera(w, id, pose, intento = 0) {
+function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
   if (sala.cargando.has(id)) { sala.cargando.set(id, pose); return; }
   sala.cargando.set(id, pose);
+  const ivPedido = pose.iv;
+  const nPedido = w.subidaN;    // si mientras baja le subo una imagen mía, lo que baja ya no va
   const hashAlPedir = sala.hash;
   fetch(salaUrl('imgs/' + id)).then(r => r.json()).then(src => new Promise((res, rej) => {
     if (typeof src !== 'string') return rej(new Error('sin imagen'));
@@ -197,22 +212,25 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0) {
   })).then(img => {
     const ultima = sala.cargando.get(id);
     sala.cargando.delete(id);
-    if (!sala.active || sala.hash !== hashAlPedir || !works.includes(w)) return;
-    if (held && held.work === w) { if (w.vacio || w.relleno) w.llenadoAfuera = ultima; return; }   // lo tengo en la mano: se llena al soltarlo
-    if (!w.vacio) return;
+    if (!sala.active || sala.hash !== hashAlPedir || !works.includes(w) || w.subiendo || w.subidaN !== nPedido) return;
+    if (held && held.work === w) { w.llenadoAfuera = ultima; return; }   // lo tengo en la mano: se resuelve al soltarlo
+    if (ultima.vacio) return;                                            // mientras bajaba, la vaciaron (salaUpsert ya la dejó vacía)
+    if (!w.vacio && !cambiar) return;
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
     Object.assign(w, soloPose(ultima)); w.vacio = false;
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
+    if (ultima.iv && ultima.iv !== ivPedido) salaLlenarDeAfuera(w, id, ultima, 0, true);   // la cambiaron otra vez mientras bajaba
   }).catch(() => {
     sala.cargando.delete(id);
     // la imagen puede tardar en subir; si no aparece en ~15 s, se deja (queda vacío hasta el próximo estado completo)
     if (held && held.work === w) { w.llenadoAfuera = pose; return; }   // se reintenta al soltarlo
     if (intento < 10) setTimeout(() => {
-      if (!sala.active || sala.hash !== hashAlPedir || !works.includes(w) || !w.vacio) return;
+      if (!sala.active || sala.hash !== hashAlPedir || !works.includes(w) || (!w.vacio && !cambiar) || w.subiendo || w.subidaN !== nPedido) return;
       if (held && held.work === w) { w.llenadoAfuera = pose; return; }
-      salaLlenarDeAfuera(w, id, pose, intento + 1);
+      if (w.iv && pose.iv && w.iv !== pose.iv && !w.vacio) return;   // mientras tanto llegó otra versión y ya se aplicó
+      salaLlenarDeAfuera(w, id, pose, intento + 1, cambiar);
     }, 1500);
   });
 }
@@ -238,27 +256,54 @@ function salaShoot(o, canvas, w) {
   // primero la imagen, después la pose: así el que recibe la pose ya encuentra la imagen
   const hashAlSubir = sala.hash;
   if (w) w.subiendo = true;   // mientras sube, soltarlo de nuevo no manda la pose (la manda esto al terminar, la del momento)
-  salaApi('imgs/' + o.id, 'PUT', src)
-    .then(() => {
+  const n = w ? (w.subidaN = (w.subidaN || 0) + 1) : 0;
+  const ivMio = w ? w.iv : o.iv;   // la versión de MI imagen (lo que llegue mientras sube no la pisa)
+  const tarea = () => {
+    if (w && w.subidaN !== n) return;                                  // otro cambio de imagen la reemplazó antes de subir
+    if (!sala.active || sala.hash !== hashAlSubir) { if (w) w.subiendo = false; return; }   // te fuiste de la sala antes de que le tocara
+    if (w && !works.includes(w)) { w.subiendo = false; return; }       // la borraste antes de que le tocara
+    return salaApi('imgs/' + o.id, 'PUT', src).then(() => {
+      if (w && w.subidaN !== n) return;                                // la cambiaste o vaciaste mientras subía: manda el último
       if (w) w.subiendo = false;
       if (!sala.active || sala.hash !== hashAlSubir) return;          // te fuiste de la sala mientras subía
       if (w && !works.includes(w)) return salaApi('imgs/' + o.id, 'DELETE');   // lo borraste mientras subía
       const p = soloPose(w || o); delete p.vacio;
+      if (ivMio) p.iv = ivMio;
       return salaApi('poses/' + o.id, 'PUT', p);
-    })
-    .catch(() => { if (w) w.subiendo = false; showHint('no se pudo subir la foto a la sala'); });
+    });
+  };
+  salaEnCola(w, tarea).catch(() => { if (w && w.subidaN === n) w.subiendo = false; showHint('no se pudo subir la foto a la sala'); });
+}
+// los cambios de imagen de una misma foto (subir, vaciar) van de a uno y en orden, para que no se pisen
+function salaEnCola(w, tarea) {
+  if (!w) return Promise.resolve().then(tarea);
+  const p = (w.colaImg || Promise.resolve()).catch(() => {}).then(tarea);
+  w.colaImg = p.catch(() => {});
+  return p;
 }
 function salaSavePose(w) {
   if (w.subiendo) return;   // la foto del bloque todavía sube: al terminar manda la pose de ahora
   const p = soloPose(w);
-  if (w.vacio && w.llenadoAfuera) { p.vacio = false; w.llenadoAfuera = { ...p }; }   // otro lo llenó mientras lo tenía: no lo vacío
+  const a = w.llenadoAfuera;   // otro le cambió la imagen mientras la tenía (y yo no): se respeta lo suyo
+  if (a) { if (a.vacio) { p.vacio = true; delete p.iv; } else { p.vacio = false; if (a.iv) p.iv = a.iv; else delete p.iv; } }
   salaApi('poses/' + w.id, 'PUT', p).catch(() => showHint('no se pudo guardar en la sala'));
 }
 // al soltar algo (con ✓ o sin): si otro le había puesto foto mientras lo tenía, bajarla ahora
 function salaSoltado(w) {
   if (!w.llenadoAfuera || !works.includes(w)) return;
   const p = w.llenadoAfuera; w.llenadoAfuera = null;
-  if (w.vacio) salaLlenarDeAfuera(w, w.id, p);
+  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; } }
+  else if (w.vacio || (p.iv && p.iv !== w.iv)) salaLlenarDeAfuera(w, w.id, p, 0, true);
+}
+// le sacaste la imagen (v10.7): primero la pose vacía (así nadie la vuelve a pedir), después se borra la imagen
+function salaVaciar(w) {
+  w.subidaN = (w.subidaN || 0) + 1; w.subiendo = false;   // si estaba subiendo una imagen, ya no va
+  const n = w.subidaN, hash = sala.hash;
+  salaEnCola(w, () => {
+    if (w.subidaN !== n || !sala.active || sala.hash !== hash || !works.includes(w)) return;   // otro cambio, otra sala o la borraste
+    const p = soloPose(w); p.vacio = true; delete p.iv;
+    return salaApi('poses/' + w.id, 'PUT', p).then(() => salaApi('imgs/' + w.id, 'DELETE'));
+  }).catch(() => showHint('no se pudo vaciar en la sala'));
 }
 function salaRemove(w) {
   sala.borradas.add(w.id);

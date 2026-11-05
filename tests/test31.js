@@ -45,7 +45,7 @@ const mock = require('./mockdb.js');
   await pg.reload(); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady); await pg.waitForTimeout(600);
   ok('el bloque vacío queda al volver a abrir', await pg.evaluate(() => __game.works.some(w => w.vacio)));
   await pg.evaluate(() => { pick(__game.works.find(w => w.vacio)); ui(); }); await pg.waitForTimeout(1200);
-  ok('agarrado: aparecen "sacar foto" y "galería"', await pg.isVisible('#llenarFoto') && await pg.isVisible('#llenarGaleria'));
+  ok('agarrado: aparece "sacar foto" (sin "galería" ni "vaciar")', await pg.isVisible('#llenarFoto') && !(await pg.$('#llenarGaleria')) && !(await pg.isVisible('#vaciarFoto')));
   await pg.screenshot({ path: out + 'v105_bloque_en_la_mano.png' });
   const id1 = await pg.evaluate(() => __game.held.work.id);
   await pg.tap('#llenarFoto'); await pg.waitForTimeout(300);

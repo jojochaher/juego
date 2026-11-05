@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.6.1';
+const VERSION = 'v10.7';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -221,7 +221,13 @@ function drawFramed(p, tex, color, deco = null) {
   const atras = add(p.c, mul(n, 0.004 * d));
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
-  if (deco) agarraderas(p, n, d, m, deco);
+  if (deco) {
+    // sin prueba de profundidad: el borde oscuro y el centro blanco de los cuadraditos están en el mismo plano y,
+    // con la precisión de profundidad del iPhone, titilaban (z-fighting). Se pintan en orden, encima de la foto.
+    const dt = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    try { agarraderas(p, n, d, m, deco); } finally { if (dt) gl.enable(gl.DEPTH_TEST); }
+  }
 }
 function agarraderas(p, n, d, m, deco) {
   const px = m / OUTLINE_PX, act = deco.activo || {};
@@ -310,7 +316,7 @@ function addWork(o, img) {
   else { o = { ...o, r: norm(o.r), u: norm(o.u) }; }
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: o.vacio && o.w > 0 && o.h > 0 ? o.h / o.w : ih / iw,
-              tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio };
+              tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio, iv: o.iv };
   setBuf(w);
   works.push(w);
   return w;
@@ -355,22 +361,55 @@ function ponerBloque() {
 }
 // llenar el bloque que tenés en la mano con una imagen (foto de la cámara o de la galería). Se guarda recién al soltarlo
 // (con la pose final: si se guardaba al llenarlo, una subida lenta pisaba después la pose de soltar); cancelar lo deja vacío.
+// v10.7 (pedido de José): también a una foto que ya tiene imagen (se la cambia) o vaciarla (vaciarFoto).
+// w.relleno guarda cómo estaba (texVieja, vacioViejo) para volver atrás si se suelta sin ✓.
+function guardarComoEstaba(w) {
+  if (w.relleno) { if (w.tex !== w.relleno.texVieja) gl.deleteTexture(w.tex); return w.relleno; }
+  return { texVieja: w.tex, aspect: w.aspect, vacioViejo: !!w.vacio };
+}
 function llenarBloque(src) {
-  if (!held || !held.work.vacio) return;
+  if (!held) return;
   cur();
   const w = held.work, L = held.L, asp = L.h / L.w;
   const c = recorteCentrado(src, asp);
-  w.relleno = { texVieja: w.tex, c, aspect: w.aspect };
+  const antes = guardarComoEstaba(w);
+  w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, c };
   w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice(); w.aspect = asp;
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
   ui();
 }
-// si se soltó sin ✓ (cancelar, la sala lo sacó de la mano...), el bloque vuelve a estar vacío
+// sacarle la imagen a la foto que tenés en la mano: queda un bloque vacío (se guarda recién al soltar con ✓)
+function vaciarFoto() {
+  if (!held || held.work.vacio) return;
+  cur();
+  const w = held.work;
+  const antes = guardarComoEstaba(w);
+  w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, vaciar: true };
+  w.tex = texture(VACIO_IMG); w.vacio = true; held.L.uv = FULL.slice();
+  buzz(12);
+  showHint('vacía: soltala con ✓ para guardarla así');
+  ui();
+}
+// si se soltó sin ✓ (cancelar, la sala lo sacó de la mano...), vuelve a como estaba
 function deshacerRelleno(w) {
   if (!w.relleno) return;
-  gl.deleteTexture(w.tex); w.tex = w.relleno.texVieja; w.vacio = true; w.aspect = w.relleno.aspect; w.relleno = null;
+  gl.deleteTexture(w.tex); w.tex = w.relleno.texVieja; w.vacio = w.relleno.vacioViejo; w.aspect = w.relleno.aspect; w.relleno = null;
+}
+// tocar lo que tenés en la mano (sin moverlo): abre cámara / galería para ponerle una foto
+function enLoQueTenes(x, y) {
+  if (!held || held.aim) return false;
+  const b = basis(), p = heldPose(b);
+  const [tx, ty] = tans();
+  const nx = (x / W) * 2 - 1, ny = 1 - (y / H) * 2;
+  const d = norm(add(b.f, add(mul(b.r, nx * tx), mul(b.u, ny * ty))));
+  const n = cross(p.r, p.u), den = dot(d, n);
+  if (Math.abs(den) < 1e-6) return false;
+  const t = dot(sub(p.c, pos), n) / den;
+  if (t <= 0) return false;
+  const q = sub(add(pos, mul(d, t)), p.c);
+  return Math.abs(dot(q, p.r)) <= p.w / 2 && Math.abs(dot(q, p.u)) <= p.h / 2;
 }
 
 // ---------- lo que tenés en la mano ----------
@@ -714,14 +753,23 @@ function drop() {
   Object.assign(w, heldPose(basis(), true));
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
+  if (relleno) w.imgN = (w.imgN || 0) + 1;               // museo: si la cambiás otra vez antes de que se guarde, gana la última
+  const imgN = w.imgN;
+  if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
+  if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
-  if (sala.active) relleno ? salaShoot({ id: w.id, ...pose }, relleno.c, w) : salaSavePose(w);
-  else {
+  if (sala.active) {
+    if (relleno && relleno.vaciar) salaVaciar(w);
+    else relleno ? salaShoot({ id: w.id, ...pose }, relleno.c, w) : salaSavePose(w);
+  } else if (relleno && relleno.vaciar) {
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose, blob: null, vacio: true }); }).catch(() => {});
+  } else {
     store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
     // el bloque lleno: la imagen se agrega al registro que haya (si mientras tanto lo borraste, no lo revive)
     if (relleno) relleno.c.toBlob(blob => {
       if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
+      if (w.imgN !== imgN) return;   // mientras tanto la vaciaste o la cambiaste
       store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false }); }).catch(() => {});
     }, 'image/jpeg', 0.85);
   }
@@ -959,7 +1007,7 @@ paintGrilla();
 let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
-  const holding = !!held, camUp = camOn && camReady, previa = camUp || bloqueOn, canEdit = started && (holding || previa);
+  const holding = !!held, camUp = camOn && camReady, previa = camUp || bloqueOn, canEdit = started && (holding || previa) && !pjVista;   // en el editor de personaje no se edita lo de la mano
   show(joyEl, started && TACTIL);
   show($('menuBtn'), started);
   show($('salaBtn'), started);
@@ -982,7 +1030,7 @@ function ui() {
   show($('camChica'), started && bloqueOn && !holding);
   const vacio = holding && held.work.vacio;
   // con el bloque equipado (cámara guardada), "cámara" la abre para sacarle la foto; ya abierta, "sacar foto"
-  show($('llenarFoto'), vacio); show($('llenarGaleria'), vacio);
+  show($('llenarFoto'), vacio); show($('vaciarFoto'), holding && !held.work.vacio);
   if (vacio) $('llenarFoto').textContent = camUp ? 'sacar foto' : camOn ? 'abriendo…' : 'cámara';
   $('girarCam').classList.toggle('ocupado', camStarting);
   show(dropBtn, started && holding);
@@ -1042,7 +1090,7 @@ $('bloque').addEventListener('click', () => setBloque(true));
 $('guardarBloque').addEventListener('click', () => setBloque(false));
 $('camChica').addEventListener('click', () => setCam(true));
 $('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); else if (!camOn) setCam(true); });
-$('llenarGaleria').addEventListener('click', () => $('bloqueArchivo').click());
+$('vaciarFoto').addEventListener('click', vaciarFoto);
 $('bloqueArchivo').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
   if (!f) return;
@@ -1257,6 +1305,7 @@ function recorteDesdeLoQueSeVe(L, x, y) {
 }
 
 canvas.addEventListener('pointerdown', e => {
+  abrirArchivoHasta = 0;   // un toque nuevo: el del archivo ya no va
   if (!started) return;
   canvas.setPointerCapture(e.pointerId);
   const t = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, crop: null };
@@ -1337,8 +1386,17 @@ function endTouch(e) {
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
     const w = workAt(e.clientX, e.clientY);
     if (w) pick(w);
+  } else if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && !pjVista && mode === 'mover'
+             && touches.size === 0 && e.button === 0 && enLoQueTenes(e.clientX, e.clientY)) {
+    abrirArchivoHasta = performance.now() + 800;   // se abre con el click que sigue (Safari solo abre un input de archivo desde un click)
   }
 }
+let abrirArchivoHasta = 0;
+canvas.addEventListener('click', () => {
+  if (performance.now() > abrirArchivoHasta || !held) return;
+  abrirArchivoHasta = 0;
+  $('bloqueArchivo').click();   // en el iPhone abre el menú: sacar foto / fototeca / archivos
+});
 canvas.addEventListener('pointerup', endTouch);
 canvas.addEventListener('pointercancel', endTouch);
 
@@ -1481,6 +1539,22 @@ const COLOR_PREVIA = [1, 0.47, 0.31];
 const deco = () => modoBordes() && !(held && held.aim) ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() } : null;
 let vacioTexGL = null;
 const texVacio = () => vacioTexGL || (vacioTexGL = texture(VACIO_IMG));
+// en el editor de personaje, las fotos que quedan entre la cámara y el personaje no se dibujan (pedido de José: lo tapaban)
+function tapaAlPersonaje(w, yo, b) {
+  const pies = yo[1] - EYE;
+  const puntos = [[0, yo[1] + 0.15], [0, pies + EYE * 0.6], [0, pies + 0.1], [-0.3, pies + EYE * 0.6], [0.3, pies + EYE * 0.6]]
+    .map(([x, y]) => [yo[0] + b.r[0] * x, y, yo[2] + b.r[2] * x]);
+  const n = cross(w.r, w.u);
+  for (const q of puntos) {
+    const d = sub(q, pos), den = dot(d, n);
+    if (Math.abs(den) < 1e-9) continue;
+    const t = dot(sub(w.c, pos), n) / den;
+    if (t <= 0 || t >= 1) continue;                        // el plano de la foto no está entre la cámara y el punto
+    const p = sub(add(pos, mul(d, t)), w.c);
+    if (Math.abs(dot(p, w.r)) <= w.w / 2 && Math.abs(dot(p, w.u)) <= w.h / 2) return true;
+  }
+  return false;
+}
 function escena(b, dt, yo) {
   gl.clearColor(0.04, 0.04, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -1491,7 +1565,7 @@ function escena(b, dt, yo) {
   gl.useProgram(quadProg);
   gl.uniformMatrix4fv(Q.m, false, m);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
-  for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id)) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
 
