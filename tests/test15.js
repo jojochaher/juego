@@ -17,12 +17,15 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
     const nn = [s.r[1]*s.u[2]-s.r[2]*s.u[1], s.r[2]*s.u[0]-s.r[0]*s.u[2], s.r[0]*s.u[1]-s.r[1]*s.u[0]];
     const n0 = [p.r[1]*p.u[2]-p.r[2]*p.u[1], p.r[2]*p.u[0]-p.r[0]*p.u[2], p.r[0]*p.u[1]-p.r[1]*p.u[0]];
     return { s, corner, frente: nn[0]*n0[0]+nn[1]*n0[1]+nn[2]*n0[2],
-      flat: g.snapPose({ c: [0.31, 0.02, 0.44], r: [1, 0, 0.05], u: n([0.05, 0.02, -1]), w: 0.6, h: 0.45, uv: [0, 0, 1, 1] }) };
+      flat: g.snapPose({ c: [0.31, 0.02, 0.44], r: [1, 0, 0.05], u: n([0.05, 0.02, -1]), w: 0.6, h: 0.45, uv: [0, 0, 1, 1] }),
+      tamanos: [[0.1, 1], [0.2, 2.6], [3.4, 0.5], [0.2, 0.3], [1.6, 1.2]].map(([w, h]) => { const q = g.snapPose({ c: [0.2, 1.3, -2], r: [1, 0, 0], u: [0, 1, 0], w, h, uv: [0, 0, 1, 1] }); return [q.w, q.h]; }) };
   });
   const near = (a, b, e = 1e-6) => Math.abs(a - b) < e;
   ok('de pie: u es vertical', near(r.s.u[1], 1));
   ok('mira en pasos de 90° (ejes x o z)', r.s.r.every(v => near(Math.abs(v), 0) || near(Math.abs(v), 1)));
   ok('ancho en metros enteros (mínimo 1) y proporción igual', near(r.s.w, 1) && near(r.s.h / r.s.w, 0.4 / 0.537, 1e-9));
+  const esperado = [[0.1, 1], [0.2 * 3 / 2.6, 3], [3, 0.5 * 3 / 3.4], [0.2 / 0.3, 1], [2, 1.5]];
+  ok('el lado más largo va al metro más cercano y la tira angosta no se estira ' + JSON.stringify(r.tamanos.map(x => x.map(v => +v.toFixed(3)))), r.tamanos.every((x, i) => near(x[0], esperado[i][0], 1e-9) && near(x[1], esperado[i][1], 1e-9)));
   ok('esquina en la grilla de 1 m (x, y, z enteros)', r.corner.every(v => near(v, Math.round(v))));
   ok('no se da vuelta (mismo lado adelante)', r.frente > 0.5);
   ok('casi horizontal: queda acostada', near(Math.abs(r.flat.r[1]), 0) && near(Math.abs(r.flat.u[1]), 0));
@@ -34,7 +37,7 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
   await pg.tap('#shoot'); await pg.waitForTimeout(600);
   const w = await pg.evaluate(() => { const w = __game.works[0]; return { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h }; });
   const corner = w.c.map((v, i) => v - w.r[i] * w.w / 2 - w.u[i] * w.h / 2);
-  ok('la foto sacada queda alineada', near(w.u[1], 1) && corner.every(v => near(v, Math.round(v))) && near(w.w, Math.round(w.w)) && w.w >= 1);
+  ok('la foto sacada queda alineada', near(w.u[1], 1) && corner.every(v => near(v, Math.round(v))) && near(Math.max(w.w, w.h), Math.round(Math.max(w.w, w.h))) && Math.max(w.w, w.h) >= 1);
   await pg.screenshot({ path: out + 'v73_grilla.png' });
   // reload: se recuerda
   await pg.reload(); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForTimeout(800);

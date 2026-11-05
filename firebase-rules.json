@@ -26,7 +26,7 @@
         "registro": { ".validate": "newData.isString() && newData.val().length < 100000" },
         "disp": { ".validate": "newData.isString() && newData.val().length < 300" },
         "sala": { ".validate": "newData.isBoolean()" },
-        "fotos": { "$n": { ".validate": "$n.length === 1 && newData.isString() && newData.val().length < 700000" } },
+        "fotos": { "$n": { ".validate": "$n.matches(/^[0-3]$/) && newData.isString() && newData.val().length < 700000" } },
         "$otro": { ".validate": false }
       }
     }

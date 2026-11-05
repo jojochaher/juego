@@ -168,17 +168,25 @@ function pjPintar() {
   for (const el of document.querySelectorAll('.abrirPersonaje')) el.addEventListener('click', pjAbrir);
 })();
 
-// la cámara de la vista en tercera persona: te mira de frente (arrastrando, gira alrededor tuyo)
+// la cámara de la vista en tercera persona: te mira de frente (arrastrando, gira alrededor tuyo).
+// Con un campo de visión fijo (PJ_FOV, no el tuyo) y a la distancia justa para que el personaje ocupe
+// casi todo el lugar libre arriba del panel, centrado ahí.
+const PJ_FOV = 40 * Math.PI / 180;
 function pjCamara() {
   const yaw = pjVista.yaw0 + pjVista.ang;
-  const centro = [pos[0], pos[1] - 0.75, pos[2]];
-  const d = 3.6;
-  const f0 = dirYaw(pjVista.yaw0);
-  const eye = [pos[0] - Math.sin(yaw) * d, pos[1] - 0.35, pos[2] - Math.cos(yaw) * d];
-  // apuntar un poco por debajo para que el personaje quede en la parte de arriba (el panel tapa abajo)
-  const mira = [centro[0], centro[1] - 1.45, centro[2]];
-  const f = norm(sub(mira, eye)), r = norm(cross(f, [0, 1, 0])), u = cross(r, f);
-  return { eye, b: { f, r, u }, f0 };
+  const ty = tans()[1];
+  const alto = innerHeight || 1;
+  const arriba = pjPanel.style.display === 'none' ? alto : pjPanel.getBoundingClientRect().top;
+  const frac = Math.min(1, Math.max(0.35, arriba / alto));     // parte de la pantalla que queda libre (arriba)
+  const centroY = 1 - frac;                                    // su centro, en coordenadas de pantalla (-1..1)
+  const cima = pos[1] + (pj.cabeza === 'cubo' ? 0.35 : 0.2) + 0.25 * Math.max(0, pj.forma - 1), pies = pos[1] - EYE;
+  const c = (cima + pies) / 2, medio = (cima - pies) / 2;
+  const d = medio / (0.72 * frac * ty);                        // que ocupe el 72% del lugar libre
+  const th = Math.atan(centroY * ty);                          // mirar un poco hacia abajo: el personaje sube al centro del lugar libre
+  const eye = [pos[0] - Math.sin(yaw) * d, c, pos[2] - Math.cos(yaw) * d];
+  const f = norm([Math.sin(yaw) * Math.cos(th), -Math.sin(th), Math.cos(yaw) * Math.cos(th)]);
+  const r = norm(cross(f, [0, 1, 0])), u = cross(r, f);
+  return { eye, b: { f, r, u } };
 }
 function pjYo(p0) {
   return {

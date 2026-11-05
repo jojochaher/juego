@@ -108,6 +108,11 @@
     right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
     width: 48px; height: 48px; background: rgba(255,255,255,0.12);
   }
+  #girarCam {
+    right: 112px; bottom: calc(118px + env(safe-area-inset-bottom));
+    width: 48px; height: 48px; background: rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  }
+  #girarCam.ocupado { opacity: 0.4; }
   #fovPanel {
     position: fixed; left: 16px; right: 66px; top: 46%; height: 64px; z-index: 4;
     background: rgba(20,20,26,0.85); border-radius: 32px; touch-action: none;
@@ -126,19 +131,19 @@
   #salaVer { flex: none; padding: 11px 12px; }
   #salaClave { color: #fff; font-size: 14px; word-break: break-all; }
   #personajePanel {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
-    background: rgba(16,16,21,0.96); border-radius: 20px 20px 0 0; display: flex; flex-direction: column; gap: 12px; max-width: 560px; margin: 0 auto;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(16,16,21,0.96); border-radius: 16px 16px 0 0; display: flex; flex-direction: column; gap: 7px; max-width: 560px; margin: 0 auto;
+    max-height: 40%; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
-  #personajePanel .fila { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #personajePanel .nota { font-size: 12px; color: rgba(255,255,255,0.5); }
-  #personajePanel .et { width: 54px; font-size: 13px; color: rgba(255,255,255,0.6); }
-  #personajePanel .pill { font-size: 12px; padding: 7px 11px; }
-  #personajePanel { gap: 10px; }
+  #personajePanel .fila { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+  #personajePanel .nota { font-size: 11px; color: rgba(255,255,255,0.5); }
+  #personajePanel .et { width: 38px; font-size: 12px; color: rgba(255,255,255,0.6); }
+  #personajePanel .pill { font-size: 12px; padding: 5px 9px; }
+  #personajePanel .sep { width: 8px; }
   #personajePanel .pill.on, #personajePanel .pill.blanco { background: rgba(255,255,255,0.9); color: #111; }
   #pjForma, #vozTono { flex: 1; max-width: 220px; accent-color: #fff; }
-  #personajePanel { max-height: 62%; overflow-y: auto; }
-  #pjColores { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
-  #pjColores .color { width: 24px; height: 24px; border-radius: 12px; border: 2px solid transparent; }
+  #pjColores { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; justify-content: space-between; }
+  #pjColores .color { width: 22px; height: 22px; border-radius: 11px; border: 2px solid transparent; }
   #pjColores .color.on { border-color: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,0.6) inset; }
   #salaVer2 { flex: none; padding: 5px 10px; font-size: 12px; margin-left: auto; }
   #salaPanel .extras { justify-content: center; margin-top: 14px; }
@@ -232,6 +237,7 @@
 </div>
 <div id="equip" class="ctl" style="display:none" aria-label="equipar cámara"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
 <div id="unequip" class="ctl" style="display:none" aria-label="guardar cámara"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/><path d="M3 3l18 18" stroke-linecap="round"/></svg></div>
+<div id="girarCam" class="ctl" style="display:none" aria-label="cambiar a la otra cámara"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><path d="M15.2 11.5a3.5 3.5 0 0 0-6.2-.8M8.8 14.5a3.5 3.5 0 0 0 6.2.8"/><path d="M9 9v1.8h1.8M15 17v-1.8h-1.8"/></svg></div>
 <div id="fovPanel" style="display:none"><div id="fovTrack"><div id="fovKnob"></div></div><span id="fovVal"></span></div>
 <div id="salaPanel" style="display:none">
   <div id="salaFuera">
@@ -264,13 +270,11 @@
 </div>
 <div id="personajePanel" style="display:none">
   <div class="fila"><b>tu personaje</b><span class="nota">arrastrá para girar</span><div id="pjListo" class="pill blanco" style="margin-left:auto">listo</div></div>
-  <div class="fila"><span class="et">cuerpo</span><div class="pill" data-cuerpo="torso">con torso</div><div class="pill" data-cuerpo="sin">sin torso</div></div>
-  <div class="fila"><span class="et">cabeza</span><div class="pill" data-cabeza="esfera">esfera</div><div class="pill" data-cabeza="cubo">cubo</div></div>
+  <div class="fila"><div class="pill" data-cuerpo="torso">con torso</div><div class="pill" data-cuerpo="sin">sin torso</div><span class="sep"></span><div class="pill" data-cabeza="esfera">esfera</div><div class="pill" data-cabeza="cubo">cubo</div></div>
   <div class="fila"><span class="et">forma</span><span class="nota">ancha</span><input type="range" id="pjForma" min="-1" max="1" step="0.01"><span class="nota">alta</span></div>
-  <div class="fila"><span class="et">color</span><div id="pjColores"></div></div>
+  <div class="fila"><div id="pjColores"></div></div>
   <div class="fila"><span class="et">voz</span><span class="nota">grave</span><input type="range" id="vozTono" min="-12" max="12" step="1"><span class="nota">aguda</span><span id="vozTonoVal" class="nota"></span></div>
-  <div class="fila"><span class="et"></span><div class="pill" data-efecto="nada">normal</div><div class="pill" data-efecto="robot">robot</div><div class="pill" data-efecto="radio">radio</div><div class="pill" data-efecto="eco">eco</div><div class="pill" data-efecto="cueva">cueva</div></div>
-  <div class="fila"><span class="et"></span><div id="vozEscuchar" class="pill">escucharme</div><span class="nota">así te escuchan los demás</span></div>
+  <div class="fila"><div class="pill" data-efecto="nada">normal</div><div class="pill" data-efecto="robot">robot</div><div class="pill" data-efecto="radio">radio</div><div class="pill" data-efecto="eco">eco</div><div class="pill" data-efecto="cueva">cueva</div><div id="vozEscuchar" class="pill">escucharme</div></div>
 </div>
 <div id="salasPanel" class="hoja" style="display:none">
   <div class="fila"><div class="tit" id="salasTit">mis salas</div><span id="salasSub" class="nota">(las que usaste en este dispositivo)</span><div id="salasModo" class="pill" style="display:none;margin-left:auto">ver todas</div></div>

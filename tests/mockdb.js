@@ -32,7 +32,7 @@ function allowed(p, uid, method, body) { // reglas (ver firebase-rules.json)
     if ('sala' in v && typeof v.sala !== 'boolean') return false;
     if (!(v.autor === 'otro' || (v.autor === 'jose' && admin))) return false;
     for (const k in v) if (!['texto', 'autor', 'v', 't', 'registro', 'disp', 'sala', 'fotos'].includes(k)) return false;
-    for (const k in (v.fotos || {})) if (k.length > 1 || typeof v.fotos[k] !== 'string' || v.fotos[k].length >= 700000) return false;
+    for (const k in (v.fotos || {})) if (!/^[0-3]$/.test(k) || typeof v.fotos[k] !== 'string' || v.fotos[k].length >= 700000) return false;
     return true;
   }
   return false;
