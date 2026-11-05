@@ -1,4 +1,4 @@
-// v10.4: recortar agarra un solo borde (o dos en una esquina), nunca dos opuestos; con la grilla, el borde que se ve
+// v10.4: recortar agarra un solo borde (o dos en una esquina), nunca dos opuestos; con la grilla, el borde que se ve (v10.6: de a metro)
 const { chromium, devices } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path');
 const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'out') + '/';
@@ -52,17 +52,18 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
   await pg.tap('#grilla'); await pg.waitForTimeout(200);
   v = await pg.evaluate(() => __visto());
   ok(`con grilla se ve de ${v.w} m (${v.tl[0].toFixed(0)}-${v.tr[0].toFixed(0)} px)`, Math.abs(v.w - 1) < 1e-9 && v.tr[0] < 400);
+  // v10.6: con la grilla los bordes van de a metro: una de 1 m de ancho no se puede recortar a lo ancho (y avisa)
   const gx = v.tr[0] - 3, gy = (v.tr[1] + v.br[1]) / 2;
   const tlAntes = v.tl;
   await T('touchStart', [[gx, gy]]);
-  for (let i = 1; i <= 8; i++) { await T('touchMove', [[gx - i * 8, gy]]); await pg.waitForTimeout(16); }
-  const g = await pg.evaluate(() => ({ a: recorteActivo(), v: __visto() }));
+  for (let i = 1; i <= 8; i++) { await T('touchMove', [[gx - i * 12, gy]]); await pg.waitForTimeout(16); }
+  const g = await pg.evaluate(() => ({ a: recorteActivo(), v: __visto(), hint: document.getElementById('hint').textContent }));
   await pg.screenshot({ path: out + 'v104_recorte_grilla.png' });
   await T('touchEnd', []);
   ok('con grilla agarra el borde derecho que se ve ' + JSON.stringify(g.a), g.a && g.a.r && !g.a.l);
-  ok(`mientras recorta, el borde sigue al dedo (${g.v.tr[0].toFixed(0)} vs ${(gx - 64 + 3).toFixed(0)}) y el izquierdo no se mueve (${tlAntes[0].toFixed(0)} -> ${g.v.tl[0].toFixed(0)})`, Math.abs(g.v.tr[0] - (gx - 64 + 3)) < 6 && Math.abs(g.v.tl[0] - tlAntes[0]) < 2);
+  ok(`1 m de ancho: el borde no se mueve (${g.v.w} m) y el izquierdo tampoco (${tlAntes[0].toFixed(0)} -> ${g.v.tl[0].toFixed(0)}); avisa: "${g.hint}"`, Math.abs(g.v.w - 1) < 1e-6 && Math.abs(g.v.tl[0] - tlAntes[0]) < 2 && /de a metro/.test(g.hint));
   const fin = await pg.evaluate(() => ({ uv: __game.preview.uv, P: previewPose(basis()) }));
-  ok(`al soltar queda recortada y alineada (uv ${fin.uv.map(x => x.toFixed(2))}, ${fin.P.w.toFixed(2)} x ${fin.P.h.toFixed(2)} m)`, fin.uv[2] < 0.95 && Math.abs(Math.max(fin.P.w, fin.P.h) - Math.round(Math.max(fin.P.w, fin.P.h))) < 1e-9);
+  ok(`al soltar sigue entera y alineada (uv ${fin.uv.map(x => x.toFixed(2))}, ${fin.P.w.toFixed(2)} x ${fin.P.h.toFixed(2)} m)`, fin.uv[2] === 1 && Math.abs(Math.max(fin.P.w, fin.P.h) - Math.round(Math.max(fin.P.w, fin.P.h))) < 1e-9);
 
   console.log('errores', pg.errs);
   await b.close(); web.close(); process.exit(0);

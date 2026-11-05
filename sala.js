@@ -277,8 +277,9 @@ function salaEnviarPresencia() {
     cam: camOn ? 1 : 0,          // apenas la equipás (antes de que abra): los demás congelan tu cara a tiempo
   };
   pjPresencia(est);
-  // lo que tengo en la mano (una foto agarrada o la vista previa de la cámara), para que los demás lo vean
-  const L = held ? heldPose(basis()) : (camOn && camReady ? previewPose(basis()) : null);
+  // lo que tengo en la mano (una foto agarrada, la vista previa de la cámara o el bloque vacío), para que los demás lo vean
+  const L = held ? heldPose(basis()) : ((camOn && camReady) || bloqueOn ? previewPose(basis()) : null);
+  if (!held && bloqueOn) est.bq = 1;
   if (L) {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
@@ -321,6 +322,7 @@ function salaPersona(id, d) {
   p.target = { p: d.p, yaw: d.yaw || 0, pitch: d.pitch || 0 };
   p.col = d.col || [0.8, 0.8, 0.8];
   p.cam = !!d.cam;
+  p.bq = !!d.bq;               // tiene el bloque vacío equipado (v10.6)
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
@@ -424,7 +426,8 @@ function salaManoDe(id, p, k) {
         if (w) drawFramed(pose, w.tex, p.col);
       } else {
         const v = p.cam && rtcVista(id);
-        if (v) drawFramed({ ...pose, uv: FULL }, v, p.col);
+        if (p.bq) drawFramed({ ...pose, uv: FULL }, texVacio(), p.col);
+        else if (v) drawFramed({ ...pose, uv: FULL }, v, p.col);
         else drawFramed({ ...pose, uv: FULL }, salaOscuro(), p.col);
       }
     }

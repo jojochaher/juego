@@ -6,7 +6,7 @@
 
 const CUENTA_KEY = 'AIzaSyA_aLxLSBD7kOu5PlHAhteW55iNgoTtKrU';
 // en las pruebas (?db=http://localhost...) el mock de la base también imita el login
-const CUENTA_MOCK = (() => { const d = new URLSearchParams(location.search).get('db'); return d && /^http:\/\/localhost/.test(d) ? d : null; })();
+const CUENTA_MOCK = (() => { const d = new URLSearchParams(location.search).get('db'); return d && /^http:\/\/localhost(:\d+)?$/.test(d) ? d : null; })();
 const CUENTA_URL = CUENTA_MOCK ? CUENTA_MOCK + '/__auth/' : 'https://identitytoolkit.googleapis.com/v1/';
 const CUENTA_REFRESH = CUENTA_MOCK ? CUENTA_MOCK + '/__auth/token' : 'https://securetoken.googleapis.com/v1/token';
 

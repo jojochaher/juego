@@ -33,10 +33,12 @@ const mock = require('./mockdb.js');
   ok(`recortar: arrastrar adentro mueve la imagen (u0 0.2 -> ${uv[0].toFixed(3)})`, uv[0] < 0.19 && Math.abs((uv[2] - uv[0]) - 0.6) < 1e-6);
   await pg.tap('[data-m="recortar"]'); await pg.tap('#ajustar');
 
-  // 3. bloque vacío en el museo
+  // 3. bloque vacío en el museo (v10.6: se equipa, el disparador lo pone, y se vuelve a la cámara)
+  const bloque = async p => { await p.tap('#bloque'); await p.waitForTimeout(150); await p.tap('#shoot'); await p.waitForTimeout(150);
+    await p.tap('#camChica'); await p.waitForFunction(() => window.__game.camReady, null, { timeout: 8000 }); await p.waitForTimeout(150); };
   ok('botón de bloque con la cámara', await pg.isVisible('#bloque'));
   const n0 = await pg.evaluate(() => __game.works.length);
-  await pg.tap('#bloque'); await pg.waitForTimeout(300);
+  await bloque(pg);
   const bl = await pg.evaluate(() => { const w = __game.works[__game.works.length - 1]; return { n: __game.works.length, vacio: w.vacio, w: w.w, h: w.h }; });
   ok('pone un bloque vacío cuadrado ' + JSON.stringify(bl), bl.n === n0 + 1 && bl.vacio && Math.abs(bl.w - bl.h) < 1e-9);
   await pg.waitForTimeout(300);
@@ -62,7 +64,7 @@ const mock = require('./mockdb.js');
   const tras = await pg.evaluate(id => { const w = __game.works.find(x => x.id === id); return w && { vacio: w.vacio, c: w.c }; }, id1);
   ok('al volver a abrir, el bloque tiene su foto y está donde lo soltaste ' + JSON.stringify(tras), tras && !tras.vacio && Math.hypot(...tras.c.map((v, i) => v - cSuelto[i])) < 1e-6);
   // desde la galería
-  await pg.tap('#bloque'); await pg.waitForTimeout(300);
+  await bloque(pg);
   await pg.evaluate(() => { pick(__game.works.find(w => w.vacio)); ui(); }); await pg.waitForTimeout(1200);
   await pg.setInputFiles('#bloqueArchivo', path.join(root, 'icon-192.png')); await pg.waitForTimeout(600);
   ok('desde la galería también se llena', await pg.evaluate(() => __game.held && !__game.held.work.vacio));
@@ -75,7 +77,7 @@ const mock = require('./mockdb.js');
     await p.goto(URL); await p.waitForTimeout(300); await p.tap('#start'); await p.waitForFunction(() => window.__game.camReady, null, { timeout: 8000 });
     await p.tap('#salaBtn'); await p.fill('#salaPass', 'bloques'); await p.tap('#salaEntrar'); await p.waitForTimeout(500); return p; };
   const A = await mk(), B = await mk();
-  await A.tap('#bloque'); await A.waitForTimeout(300);
+  await bloque(A);
   const idB = await A.evaluate(() => __game.works.find(w => w.vacio).id);
   ok('B ve el bloque vacío de A', await espera(B, id => __game.works.some(w => w.id === id && w.vacio), idB));
   await B.evaluate(id => { pick(__game.works.find(w => w.id === id)); ui(); }, idB); await B.waitForTimeout(1200);
@@ -88,7 +90,7 @@ const mock = require('./mockdb.js');
   const cA = await A.evaluate(id => __game.works.find(w => w.id === id).c, idB);
   ok(`y en el lugar donde B lo soltó (${cB.map(v => v.toFixed(2))} / ${cA.map(v => v.toFixed(2))})`, Math.hypot(cA[0] - cB[0], cA[1] - cB[1], cA[2] - cB[2]) < 1e-6);
   // A tiene otro bloque en la mano mientras B lo llena; al soltarlo A no lo vacía
-  await A.tap('#bloque'); await A.waitForTimeout(300);
+  await bloque(A);
   const id2 = await A.evaluate(() => __game.works.find(w => w.vacio).id);
   await espera(B, id => __game.works.some(w => w.id === id), id2);
   await A.evaluate(id => { pick(__game.works.find(w => w.id === id)); ui(); }, id2); await A.waitForTimeout(1200);

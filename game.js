@@ -1,10 +1,10 @@
 // juego — museo en el vacío con fotos (ver claude/instrucciones.md del proyecto para el estado)
 // Mirás con el giroscopio y ajustás arrastrando con el dedo. Te movés con el joystick.
 // Lo que tenés "en la mano" (la vista previa de la cámara, o una foto que agarraste) viaja pegado
-// a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes),
-// recortar (bordes; adentro, pan y zoom de la imagen), girar (sobre su eje).
+// a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
+// imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.5.1';
+const VERSION = 'v10.6';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -208,23 +208,71 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE) {
 function tans() { const t = Math.tan(FOVX / 2); return W <= H ? [t, t * H / W] : [t * W / H, t]; }
 const metersPerPx = d => d * 2 * tans()[0] / W;   // cuánto mide un px a distancia d
 
-// foto con marco de grosor fijo en pantalla, el marco apenas detrás
+// foto con marco de grosor fijo en pantalla, el marco apenas detrás.
+// deco (en recortar / escalar): las agarraderas encima de la foto. Recortar: esquinas en L y barritas en el medio de
+// cada lado (y los tercios mientras se recorta); escalar: cuadraditos en las esquinas y en el medio de los lados.
+// El lado que se está moviendo va en amarillo: su línea del marco y sus agarraderas, con la misma forma (sin barras encimadas).
 const COLOR_RECORTE = [1, 0.85, 0.2];
-function drawFramed(p, tex, color, bordes = null) {
+function drawFramed(p, tex, color, deco = null) {
   const d = len(sub(p.c, pos));
   const m = OUTLINE_PX * metersPerPx(d);
   let n = norm(cross(p.r, p.u));
   if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);         // hacia atrás de la foto
   const atras = add(p.c, mul(n, 0.004 * d));
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
-  if (bordes) {                                          // el borde que se recorta: más grueso y de otro color
-    const g = 3 * m, atras = add(p.c, mul(n, 0.003 * d));   // un poco delante del marco (que no se pelee con él)
-    if (bordes.l) drawQuad(scratch, quadData(add(atras, mul(p.r, -p.w / 2)), p.r, p.u, 2 * g, p.h + 2 * m), white, COLOR_RECORTE);
-    if (bordes.r) drawQuad(scratch, quadData(add(atras, mul(p.r, p.w / 2)), p.r, p.u, 2 * g, p.h + 2 * m), white, COLOR_RECORTE);
-    if (bordes.t) drawQuad(scratch, quadData(add(atras, mul(p.u, p.h / 2)), p.r, p.u, p.w + 2 * m, 2 * g), white, COLOR_RECORTE);
-    if (bordes.b) drawQuad(scratch, quadData(add(atras, mul(p.u, -p.h / 2)), p.r, p.u, p.w + 2 * m, 2 * g), white, COLOR_RECORTE);
-  }
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
+  if (deco) agarraderas(p, n, d, m, deco);
+}
+function agarraderas(p, n, d, m, deco) {
+  const px = m / OUTLINE_PX, act = deco.activo || {};
+  const frente = add(p.c, mul(n, -0.002 * d));          // apenas delante de la foto
+  const hw = p.w / 2, hh = p.h / 2;
+  // un rectángulo en el plano de la foto: centro (x, y) desde el centro de la foto, ancho y alto en metros
+  const rect = (x, y, w, h, col, alfa = 1) => {
+    const c = add(frente, add(mul(p.r, x), mul(p.u, y)));
+    if (alfa < 1) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); }
+    drawQuad(scratch, quadData(c, p.r, p.u, w, h), white, col, alfa);
+    if (alfa < 1) gl.disable(gl.BLEND);
+  };
+  const B = [1, 1, 1], Y = COLOR_RECORTE;
+  const cl = k => act[k] ? Y : B;
+  // el lado activo: su línea del marco, en amarillo (justo encima del marco, mismo grosor)
+  const lineaActiva = () => {
+    if (act.l) rect(-hw - m / 2, 0, m, p.h + 2 * m, Y);
+    if (act.r) rect(hw + m / 2, 0, m, p.h + 2 * m, Y);
+    if (act.t) rect(0, hh + m / 2, p.w + 2 * m, m, Y);
+    if (act.b) rect(0, -hh - m / 2, p.w + 2 * m, m, Y);
+  };
+  if (deco.modo === 'escalar') {
+    lineaActiva();                                       // abajo de los cuadraditos
+    const s = 10 * px;                                   // cuadraditos de 10 px, centrados en el borde
+    for (const [x, y, ks] of [[-hw, hh, 'lt'], [hw, hh, 'rt'], [-hw, -hh, 'lb'], [hw, -hh, 'rb'], [0, hh, 't'], [0, -hh, 'b'], [-hw, 0, 'l'], [hw, 0, 'r']]) {
+      const on = [...ks].every(k => act[k]);
+      rect(x, y, s + 2 * px, s + 2 * px, [0.1, 0.1, 0.12]);   // borde oscuro, así se ve sobre una foto clara
+      rect(x, y, s, s, on ? Y : B);
+    }
+    return;
+  }
+  // recortar: tercios mientras un dedo recorta
+  if (deco.activo) {
+    for (const k of [-1 / 6, 1 / 6]) { rect(k * p.w, 0, px, p.h, B, 0.45); rect(0, k * p.h, p.w, px, B, 0.45); }
+  }
+  const g = 5 * px;                                      // grosor de las agarraderas (más que el marco), por fuera hasta el marco
+  const brazo = (lado) => Math.min(26 * px, lado * 0.3);
+  const ax = brazo(p.w), ay = brazo(p.h);
+  const o = m - g / 2;                                   // el centro de la agarradera: su borde de afuera coincide con el del marco
+  for (const [sx, sy] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
+    const kx = sx < 0 ? 'l' : 'r', ky = sy > 0 ? 't' : 'b';
+    const ex = sx * (hw + o), ey = sy * (hh + o);        // centro de la línea de la agarradera
+    // brazo horizontal (sobre el lado de arriba o abajo) y vertical (sobre el izquierdo o derecho)
+    rect(sx * (hw + m) - sx * (ax + m) / 2, ey, ax + m, g, cl(ky));
+    rect(ex, sy * (hh + m) - sy * (ay + m) / 2, g, ay + m, cl(kx));
+  }
+  // barritas en el medio de cada lado
+  const bx = Math.min(30 * px, p.w * 0.25), by = Math.min(30 * px, p.h * 0.25);
+  rect(0, hh + o, bx, g, cl('t')); rect(0, -hh - o, bx, g, cl('b'));
+  rect(-hw - o, 0, g, by, cl('l')); rect(hw + o, 0, g, by, cl('r'));
+  lineaActiva();                                         // al final: el lado que se mueve se ve entero, sin cortes
 }
 
 function matrix(b) {
@@ -261,7 +309,7 @@ function addWork(o, img) {
   if (rota) diag(`foto rota ${String(o.id).slice(-6)}: ${rota} → no choca`);
   else { o = { ...o, r: norm(o.r), u: norm(o.u) }; }
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-  const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: ih / iw,
+  const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: o.vacio && o.w > 0 && o.h > 0 ? o.h / o.w : ih / iw,
               tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio };
   setBuf(w);
   works.push(w);
@@ -294,13 +342,11 @@ function uvCentrado(aspecto) {
   if (va > aspecto) { const k = aspecto / va; return [0, (1 - k) / 2, 1, (1 + k) / 2]; }
   const k = va / aspecto; return [(1 - k) / 2, 0, (1 + k) / 2, 1];
 }
+// con el bloque equipado, el disparador lo pone donde se ve en la mano (con su tamaño y forma)
 function ponerBloque() {
-  if (!started || held || !camOn) return;
-  const p = previewPose(basis(), true);
-  const lado = Math.max(p.w, p.h);
-  // cuadrado, del lado más largo de la vista previa, con la misma esquina de abajo a la izquierda
-  const esq = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
-  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: add(add(esq, mul(p.r, lado / 2)), mul(p.u, lado / 2)), r: p.r, u: p.u, w: lado, h: lado, uv: FULL.slice(), vacio: true };
+  if (!started || held || !bloqueOn) return;
+  const p = previewPose(basis());
+  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: p.c, r: p.r, u: p.u, w: p.w, h: p.h, uv: FULL.slice(), vacio: true };
   addWork(o, VACIO_IMG);
   if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
   else store('readwrite', s => s.put({ ...o, blob: null })).catch(() => {});
@@ -314,8 +360,8 @@ function llenarBloque(src) {
   cur();
   const w = held.work, L = held.L, asp = L.h / L.w;
   const c = recorteCentrado(src, asp);
-  w.relleno = { texVieja: w.tex, c };
-  w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice();
+  w.relleno = { texVieja: w.tex, c, aspect: w.aspect };
+  w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice(); w.aspect = asp;
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
@@ -324,7 +370,7 @@ function llenarBloque(src) {
 // si se soltó sin ✓ (cancelar, la sala lo sacó de la mano...), el bloque vuelve a estar vacío
 function deshacerRelleno(w) {
   if (!w.relleno) return;
-  gl.deleteTexture(w.tex); w.tex = w.relleno.texVieja; w.vacio = true; w.relleno = null;
+  gl.deleteTexture(w.tex); w.tex = w.relleno.texVieja; w.vacio = true; w.aspect = w.relleno.aspect; w.relleno = null;
 }
 
 // ---------- lo que tenés en la mano ----------
@@ -337,9 +383,17 @@ function freshPreview(aspect = 4 / 3) {
   return { c: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0], w: DEFAULT_W, h: DEFAULT_W * aspect, uv: FULL.slice(), aspect, fresh: true };
 }
 let preview = freshPreview();
+// el bloque vacío también es un ítem que se equipa (como la cámara): en la mano se ve un cuadrado gris que se
+// acomoda igual que la vista previa de la cámara, y el disparador lo pone donde está
+const freshBloque = () => ({ c: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0], w: DEFAULT_W, h: DEFAULT_W, uv: FULL.slice(), aspect: 1 });
+let previewBloque = freshBloque();
+let bloqueOn = false;
+try { bloqueOn = localStorage.getItem('bloque') === '1'; } catch (e) {}
+const enMano = () => bloqueOn ? previewBloque : preview;     // la vista previa del ítem equipado
+const vacioEnMano = () => held ? !!held.work.vacio : bloqueOn;   // un bloque vacío: recortar es escalar (no hay imagen)
 let held = null;            // { work, L }
 let mode = 'mover';
-const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : preview; };
+const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : enMano(); };
 // distancia de lo que está en la mano (sin cortar el giro hacia la foto)
 const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur().c);
 
@@ -492,16 +546,16 @@ function guiasGrilla(p, col) {
   gl.disable(gl.BLEND);
 }
 
-// dónde queda lo que tenés en la mano (con la grilla prendida, ya alineado; mientras un dedo recorta se muestra
-// sin alinear, salvo que se pida la pose final: al soltar o sacar la foto siempre queda alineada)
-function heldPose(b, final) {
+// dónde queda lo que tenés en la mano (con la grilla prendida, ya alineado; también mientras se recorta o se escala:
+// los bordes se mueven de a metro, así lo que se ve es lo que queda)
+function heldPose(b) {
   if (held.aim) return held.work;
   const p = worldPose(b, held.L);
-  return grilla && (final || !recorteActivo()) ? snapPose(p) : p;
+  return grilla ? snapPose(p) : p;
 }
-function previewPose(b, final) {
-  const p = worldPose(b, preview);
-  return grilla && (final || !recorteActivo()) ? snapPose(p) : p;
+function previewPose(b) {
+  const p = worldPose(b, enMano());
+  return grilla ? snapPose(p) : p;
 }
 
 // operaciones sobre lo que está en la mano
@@ -542,20 +596,56 @@ function fitUV(uv) {   // mantiene la ventana adentro de la imagen sin cambiar s
   if (v0 < 0) { v1 -= v0; v0 = 0; } if (v1 > 1) { v0 -= v1 - 1; v1 = 1; }
   return [Math.max(0, u0), Math.max(0, v0), Math.min(1, u1), Math.min(1, v1)];
 }
-// recortar: mover bordes. edges = {l, r, t, b}; (a, bb) = punto del dedo en el plano de la foto, en metros
-function cropTo(L, edges, a, bb) {
-  const [u0, v0, u1, v1] = L.uv;
-  const su = L.w / (u1 - u0), sv = L.h / (v1 - v0);
-  let left = -L.w / 2, right = L.w / 2, top = L.h / 2, bottom = -L.h / 2;
-  const mn = 0.04 * len(L.c);
-  let nu0 = u0, nu1 = u1, nv0 = v0, nv1 = v1;
-  if (edges.r) { right = clamp(a, left + mn, left + (1 - u0) * su); nu1 = u0 + (right - left) / su; }
-  if (edges.l) { left = clamp(a, right - u1 * su, right - mn); nu0 = u1 - (right - left) / su; }
-  if (edges.t) { top = clamp(bb, bottom + mn, bottom + v1 * sv); nv0 = v1 - (top - bottom) / sv; }
-  if (edges.b) { bottom = clamp(bb, top - (1 - v0) * sv, top - mn); nv1 = v0 + (top - bottom) / sv; }
-  L.c = add(L.c, add(mul(L.r, (left + right) / 2), mul(L.u, (top + bottom) / 2)));
+// recortar o escalar: mover bordes. edges = {l, r, t, b}; base = cómo estaba al apoyar el dedo; (a, bb) = el dedo
+// en el plano de la foto (metros, desde el centro de base). Recortar cambia qué parte de la imagen se ve (uv);
+// escalar (estirar) estira la imagen en x o en y. Con la grilla, los bordes caen en líneas de la grilla (de a metro
+// desde la esquina, que ya está en un punto entero) y solo se permite lo que queda igual al alinearlo: el lado más
+// largo en metros enteros. Si no hay ninguna posición posible, el borde no se mueve (devuelve false).
+function stableGrilla(w, h) { const m = Math.max(w, h); return m >= 1 - 1e-6 && Math.abs(m - Math.round(m)) < 1e-6; }
+function bordesA(L, base, edges, a, bb, estirar, alinear) {
+  const [u0, v0, u1, v1] = base.uv;
+  const su = base.w / (u1 - u0), sv = base.h / (v1 - v0);
+  const L0 = -base.w / 2, R0 = base.w / 2, T0 = base.h / 2, B0 = -base.h / 2;
+  const mn = alinear ? 0.05 : 0.04 * len(base.c), MAX = 40;
+  const lim = {
+    r: [L0 + mn, estirar ? L0 + MAX : L0 + (1 - u0) * su],
+    l: [estirar ? R0 - MAX : R0 - u1 * su, R0 - mn],
+    t: [B0 + mn, estirar ? B0 + MAX : B0 + v1 * sv],
+    b: [estirar ? T0 - MAX : T0 - (1 - v0) * sv, T0 - mn],
+  };
+  const E = 1e-6;
+  // posiciones posibles de cada borde (con la grilla: la de ahora y las líneas de la grilla dentro del límite)
+  const opciones = (k, fijo, desde, quiero) => {
+    if (!edges[k]) return [fijo];
+    const [lo, hi] = lim[k];
+    if (!alinear) return [clamp(quiero, lo, hi)];
+    const o = [fijo];
+    for (let n = Math.ceil(lo - desde - E); desde + n <= hi + E; n++) if (desde + n >= lo - E) o.push(desde + n);
+    return o;
+  };
+  // los bordes de la izquierda y de abajo están en la grilla (la esquina); los otros, a metros enteros de ellos
+  const xs = edges.r ? opciones('r', R0, L0, a).map(x => [L0, x]) : opciones('l', L0, L0, a).map(x => [x, R0]);
+  const ys = edges.t ? opciones('t', T0, B0, bb).map(y => [B0, y]) : opciones('b', B0, B0, bb).map(y => [y, T0]);
+  // la distancia se mide hasta donde iría el borde sin grilla (el dedo, dentro del límite): así pasarse de la imagen no avisa
+  const ta = edges.l ? clamp(a, ...lim.l) : edges.r ? clamp(a, ...lim.r) : 0, tb = edges.b ? clamp(bb, ...lim.b) : edges.t ? clamp(bb, ...lim.t) : 0;
+  let mejor = null, costo = Infinity;
+  for (const [l, r] of xs) for (const [b, t] of ys) {
+    if (alinear && !stableGrilla(r - l, t - b)) continue;
+    const c = (edges.l ? Math.abs(l - ta) : edges.r ? Math.abs(r - ta) : 0) + (edges.b ? Math.abs(b - tb) : edges.t ? Math.abs(t - tb) : 0);
+    if (c < costo - 1e-9) { costo = c; mejor = [l, r, b, t]; }
+  }
+  if (!mejor) return false;
+  const [left, right, bottom, top] = mejor;
+  L.c = add(base.c, add(mul(base.r, (left + right) / 2), mul(base.u, (top + bottom) / 2)));
+  L.r = base.r.slice(); L.u = base.u.slice();
   L.w = right - left; L.h = top - bottom;
-  L.uv = [nu0, nv0, nu1, nv1];
+  if (estirar) L.uv = base.uv.slice();
+  else {
+    const c01 = v => clamp(v, 0, 1);
+    L.uv = [c01(u0 + (left - L0) / su), c01(v0 + (T0 - top) / sv), c01(u0 + (right - L0) / su), c01(v0 + (T0 - bottom) / sv)];
+  }
+  // ¿se quedó lejos del dedo porque la grilla no deja? (para avisar)
+  return { lejos: costo > 0.55 };
 }
 // dónde toca el dedo el plano de lo que está en la mano (coordenadas de la foto, en metros)
 function touchOnHeld(L, x, y) {
@@ -572,7 +662,7 @@ function touchOnHeld(L, x, y) {
 function resetHeld() {
   const L = cur();
   const d = held ? len(L.c) : 1;                      // la vista previa vuelve a 1 m
-  const aspect = held ? held.work.aspect : (video.videoWidth ? video.videoHeight / video.videoWidth : 4 / 3);
+  const aspect = held ? held.work.aspect : bloqueOn ? 1 : (video.videoWidth ? video.videoHeight / video.videoWidth : 4 / 3);
   const w = held ? L.w : DEFAULT_W * d;
   Object.assign(L, { c: [0, 0, d], r: [1, 0, 0], u: [0, 1, 0], w, h: w * aspect, uv: FULL.slice() });
   buzz(10);
@@ -722,6 +812,7 @@ async function loadWorks() {
 // ---------- cámara (un ítem que se equipa y se guarda) ----------
 let camReady = false, camOn = true, camStarting = false;
 try { camOn = localStorage.getItem('camara') !== '0'; } catch (e) {}
+if (bloqueOn) camOn = false;   // un ítem a la vez: la cámara o el bloque
 // qué cámara usa la de fotos: la de atrás (normal) o la de adelante (para ponerte vos en las fotos)
 let camFrente = false, camVarias = false, camAspecto = 0;
 try { camFrente = localStorage.getItem('camFrente') === '1'; } catch (e) {}
@@ -743,7 +834,8 @@ async function startCamera(conMic) {
     if (!s) s = await navigator.mediaDevices.getUserMedia({ audio: false, video: vid });
     if (!camOn) { s.getTracks().forEach(t => t.stop()); return; }   // la guardaste mientras abría
     video.srcObject = s;
-    await video.play();
+    await video.play().catch(e => { if (camOn) throw e; });
+    if (!camOn || video.srcObject !== s) { s.getTracks().forEach(t => t.stop()); return; }   // la guardaste (o pusiste el bloque) mientras abría
     camReady = true;
     diag('cámara de fotos: abierta ' + video.videoWidth + 'x' + video.videoHeight + (camFrente ? ' (la de adelante)' : ''));
     // si la otra cámara tiene otra proporción, la vista previa la sigue (sin perder el tamaño ni el recorte)
@@ -754,7 +846,7 @@ async function startCamera(conMic) {
       .then(ds => { camVarias = ds.filter(d => d.kind === 'videoinput').length > 1; ui(); }).catch(() => {});
     rtcPistas();   // en una sala, los demás ven lo que encuadrás
   } catch (e) {
-    showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
+    if (camOn) showHint('no pude abrir la cámara: ' + (e && e.name || e), true);
     diag('cámara de fotos: falló ' + (e && e.name || e));
   } finally {
     camStarting = false;
@@ -771,8 +863,22 @@ function setCam(on) {
   camOn = on;
   try { localStorage.setItem('camara', on ? '1' : '0'); } catch (e) {}
   // la cámara de fotos (trasera) y la de tu cara (frontal) no pueden estar prendidas a la vez
+  if (on && bloqueOn) { bloqueOn = false; try { localStorage.setItem('bloque', '0'); } catch (e) {} if (!held) { setMode('mover'); if (ajustando) setAjustar(false); } }
   if (on) { rtcSoltarCara(); startCamera(); }
   else { stopCamera(); if (!held) { setMode('mover'); if (ajustando) setAjustar(false); } rtcMedios(); }   // guardarla pliega ajustar (como soltar)
+  buzz(10);
+  ui();
+}
+
+// equipar / guardar el bloque vacío (un ítem a la vez: equiparlo guarda la cámara)
+function setBloque(on) {
+  const apagoCam = on && camOn;
+  if (apagoCam) { camOn = false; try { localStorage.setItem('camara', '0'); } catch (e) {} stopCamera(); }
+  bloqueOn = on;
+  try { localStorage.setItem('bloque', on ? '1' : '0'); } catch (e) {}
+  if (!held) { setMode('mover'); if (ajustando) setAjustar(false); }
+  if (apagoCam) rtcMedios();   // sin la cámara de fotos vuelve tu cara
+  if (on) showHint('bloque vacío: el disparador lo pone ahí · después agarralo para ponerle una foto');
   buzz(10);
   ui();
 }
@@ -789,8 +895,9 @@ async function camGirar() {
 }
 
 function shoot() {
+  if (bloqueOn) return ponerBloque();
   if (!camOn || !camReady || !video.videoWidth || held) return;
-  const pose = previewPose(basis(), true);
+  const pose = previewPose(basis());
   const k = Math.min(1, 1024 / Math.max(video.videoWidth, video.videoHeight));
   const c = document.createElement('canvas');
   c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
@@ -817,6 +924,7 @@ function showHint(t, stay) {
 const MODE_HINT = {
   mover: 'dos dedos: tamaño y giro · barra: distancia',
   recortar: 'borde o esquina: recortar · adentro: mover la imagen · dos dedos: zoom',
+  escalar: 'borde: estirar a lo ancho o a lo alto · esquina: las dos cosas · dos dedos: tamaño',
   girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
 };
 function setMode(m) {
@@ -851,7 +959,7 @@ paintGrilla();
 let started = false;
 function ui() {
   const show = (el, on) => { el.style.display = on ? '' : 'none'; };
-  const holding = !!held, camUp = camOn && camReady, canEdit = started && (holding || camUp);
+  const holding = !!held, camUp = camOn && camReady, previa = camUp || bloqueOn, canEdit = started && (holding || previa);
   show(joyEl, started && TACTIL);
   show($('menuBtn'), started);
   show($('salaBtn'), started);
@@ -862,13 +970,20 @@ function ui() {
   show(distEl, canEdit);
   show($('edicion'), canEdit);
   show(modesEl, canEdit && ajustando);
-  show(shootBtn, started && camUp && !holding);
-  show(equipBtn, started && !camOn && !holding);
+  show(shootBtn, started && previa && !holding);
+  shootBtn.classList.toggle('bloque', bloqueOn);
+  show(equipBtn, started && !camOn && !bloqueOn && !holding);
   show(unequipBtn, started && camOn && !holding);
   show($('girarCam'), started && camOn && !holding && TACTIL && camVarias);
-  show($('bloque'), started && camUp && !holding);
+  // el bloque: equiparlo (al lado de la cámara) o, ya equipado, guardarlo o pasar a la cámara
+  show($('bloque'), started && !bloqueOn && !holding);
+  $('bloque').classList.toggle('solo', !camOn);
+  show($('guardarBloque'), started && bloqueOn && !holding);
+  show($('camChica'), started && bloqueOn && !holding);
   const vacio = holding && held.work.vacio;
-  show($('llenarFoto'), vacio && camUp); show($('llenarGaleria'), vacio);
+  // con el bloque equipado (cámara guardada), "cámara" la abre para sacarle la foto; ya abierta, "sacar foto"
+  show($('llenarFoto'), vacio); show($('llenarGaleria'), vacio);
+  if (vacio) $('llenarFoto').textContent = camUp ? 'sacar foto' : camOn ? 'abriendo…' : 'cámara';
   $('girarCam').classList.toggle('ocupado', camStarting);
   show(dropBtn, started && holding);
   show(trashBtn, started && holding);
@@ -923,8 +1038,10 @@ paintFov();
 
 // ---------- equipar / guardar la cámara ----------
 const equipBtn = $('equip'), unequipBtn = $('unequip');
-$('bloque').addEventListener('click', ponerBloque);
-$('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); });
+$('bloque').addEventListener('click', () => setBloque(true));
+$('guardarBloque').addEventListener('click', () => setBloque(false));
+$('camChica').addEventListener('click', () => setCam(true));
+$('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); else if (!camOn) setCam(true); });
 $('llenarGaleria').addEventListener('click', () => $('bloqueArchivo').click());
 $('bloqueArchivo').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
@@ -1050,8 +1167,8 @@ function tecladoMover() {
   return [x / l * rapido, y / l * rapido];
 }
 const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
-  'C: cámara · espacio: sacar foto / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
-  '1: mover · 2: recortar · 3: girar · B: bloque vacío · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
+  'C: cámara · B: bloque vacío · espacio: sacar foto o poner el bloque / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
+  '1: mover · 2: recortar · 3: escalar · 4: girar · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
 const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
 window.addEventListener('keydown', e => {
@@ -1071,18 +1188,18 @@ window.addEventListener('keydown', e => {
     }
   }
   else if (c === 'Delete' || c === 'Backspace') click(trashBtn);
-  else if (c === 'KeyC' && !held) click(camOn ? unequipBtn : equipBtn);
-  else if (c === 'KeyB' && !held) ponerBloque();
+  else if (c === 'KeyC' && !held) click(camOn ? unequipBtn : bloqueOn ? $('camChica') : equipBtn);
+  else if (c === 'KeyB' && !held) click(bloqueOn ? $('guardarBloque') : $('bloque'));
   else if (c === 'KeyG') { if (visible($('edicion'))) grillaBtn.click(); }
   else if (c === 'KeyH') showHint(ATAJOS);
-  else if (/^Digit[1-3]$/.test(c)) { const m = ['mover', 'recortar', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
+  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'escalar', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
   if (c.startsWith('Arrow')) e.preventDefault();
 });
 window.addEventListener('keyup', e => teclas.delete(e.code));
 window.addEventListener('blur', () => teclas.clear());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  if (!started || !(held || (camOn && camReady))) return;
+  if (!started || !(held || (camOn && camReady) || bloqueOn)) return;
   const L = cur(), d = Math.max(-200, Math.min(200, e.deltaY || e.deltaX));
   if (e.shiftKey) scaleBy(L, Math.exp(-d * 0.002));
   else if (e.altKey) rollBy(L, d * 0.004);
@@ -1125,9 +1242,11 @@ function dentroDeLoQueSeVe(L, x, y) {
   if (M !== L) Object.assign(L, M);
   return true;
 }
-// el borde que se está recortando (para dibujarlo de otro color y, con la grilla, mostrar la foto sin alinear mientras tanto)
-function recorteActivo() { if (mode !== 'recortar') return null; for (const t of touches.values()) if (t.crop) return t.crop; return null; }
-// con la grilla, al empezar a recortar se toma el tamaño y lugar alineados que se ven, así el borde queda bajo el dedo
+// el borde que se está recortando o escalando (para pintarlo de otro color)
+const modoBordes = () => mode === 'recortar' || mode === 'escalar';
+function recorteActivo() { if (!modoBordes()) return null; for (const t of touches.values()) if (t.crop) return t.crop; return null; }
+// con la grilla, al apoyar el dedo se toma el tamaño y lugar alineados que se ven, así el borde queda bajo el dedo
+// (y la esquina en un punto de la grilla: los bordes se mueven de a metro desde ahí)
 function recorteDesdeLoQueSeVe(L, x, y) {
   if (!grilla) return edgesAt(L, x, y);
   const b = basis(), p = snapPose(worldPose(b, L));
@@ -1141,9 +1260,10 @@ canvas.addEventListener('pointerdown', e => {
   if (!started) return;
   canvas.setPointerCapture(e.pointerId);
   const t = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, crop: null };
-  if (mode === 'recortar' && touches.size === 0) {        // un solo dedo recorta; adentro de la foto, mueve la imagen
+  if (modoBordes() && touches.size === 0) {        // un solo dedo recorta (o escala); en recortar, adentro de la foto mueve la imagen
     t.crop = recorteDesdeLoQueSeVe(cur(), e.clientX, e.clientY);
-    if (!t.crop) t.pan = dentroDeLoQueSeVe(cur(), e.clientX, e.clientY);
+    if (t.crop) { const L = cur(); t.obj = L; t.base = { c: L.c.slice(), r: L.r.slice(), u: L.u.slice(), w: L.w, h: L.h, uv: L.uv.slice() }; t.grilla = grilla; }
+    else if (mode === 'recortar' && !vacioEnMano()) t.pan = dentroDeLoQueSeVe(cur(), e.clientX, e.clientY);
   }
   touches.set(e.pointerId, t);
   if (touches.size === 2) {
@@ -1172,15 +1292,23 @@ canvas.addEventListener('pointermove', e => {
     else { gesture.giro += da; if (Math.abs(gesture.giro) > 0.17) { gesture.girando = true; giro = gesture.giro - Math.sign(gesture.giro) * 0.17; } }
     if (mode === 'mover') { scaleBy(L, k); if (giro) rollBy(L, -giro); }
     else if (mode === 'girar') { if (giro) rollBy(L, -giro); }
-    else if (mode === 'recortar') zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
+    else if (mode === 'recortar' && !vacioEnMano()) zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
+    else if (mode === 'escalar' || mode === 'recortar') scaleBy(L, k);
     return;
   }
   if (!t.moved && Math.hypot(t.x - t.x0, t.y - t.y0) > 8) t.moved = true;
   if (!t.moved) return;
 
-  if (mode === 'recortar' && t.crop) {
-    const p = touchOnHeld(L, e.clientX, e.clientY);
-    if (p) cropTo(L, t.crop, p[0], p[1]);
+  if (modoBordes() && t.crop) {
+    if (L !== t.obj) { t.crop = null; return; }   // lo soltaste (o te lo sacaron) a mitad del arrastre
+    const p = touchOnHeld(t.base, e.clientX, e.clientY);
+    if (p) {
+      const r = bordesA(L, t.base, t.crop, p[0], p[1], mode === 'escalar' || vacioEnMano(), t.grilla && grilla);
+      if (t.grilla && grilla && (!r || r.lejos) && !t.avisado) {
+        t.avisado = true;
+        showHint('con la grilla los lados van de a metro: ' + (mode === 'escalar' ? 'así no entra' : 'así no se puede recortar'));
+      }
+    }
     return;
   }
   if (mode === 'recortar' && t.pan) {
@@ -1348,6 +1476,11 @@ function draw(now) {
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
+const COLOR_PREVIA = [1, 0.47, 0.31];
+// las agarraderas de recortar / escalar (con el lado que se está moviendo)
+const deco = () => modoBordes() && !(held && held.aim) ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() } : null;
+let vacioTexGL = null;
+const texVacio = () => vacioTexGL || (vacioTexGL = texture(VACIO_IMG));
 function escena(b, dt, yo) {
   gl.clearColor(0.04, 0.04, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -1366,20 +1499,24 @@ function escena(b, dt, yo) {
   if (yo) { /* en el editor no se muestra lo que tenés en la mano */ }
   else if (held) {
     const p = heldPose(b);
-    if (grilla && !held.aim) guiasGrilla(heldPose(b, true), [1, 1, 1]);   // las guías, siempre de donde va a quedar
+    if (grilla && !held.aim) guiasGrilla(p, [1, 1, 1]);   // las guías, de donde va a quedar
     let tex = held.work.tex;
     if (held.work.vacio && camOn && camReady && video.readyState >= 2) {   // bloque vacío: muestra la cámara, para sacarle la foto
       gl.bindTexture(gl.TEXTURE_2D, videoTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
       tex = videoTex;
     }
-    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], recorteActivo());
+    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], deco());
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
     const p = previewPose(b);
-    if (grilla) guiasGrilla(previewPose(b, true), [1, 0.47, 0.31]);
-    drawFramed(p, videoTex, [1, 0.47, 0.31], recorteActivo());
+    if (grilla) guiasGrilla(p, COLOR_PREVIA);
+    drawFramed(p, videoTex, COLOR_PREVIA, deco());
+  } else if (bloqueOn && started) {                       // el bloque vacío equipado: un cuadrado gris en la mano
+    const p = previewPose(b);
+    if (grilla) guiasGrilla(p, COLOR_PREVIA);
+    drawFramed(p, texVacio(), COLOR_PREVIA, deco());
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)
@@ -1444,7 +1581,7 @@ requestAnimationFrame(frame);
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
   pos, works, joy,
-  get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get mode() { return mode; },
+  get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get previewBloque() { return previewBloque; }, get bloqueOn() { return bloqueOn; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
   get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, snapPose,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
