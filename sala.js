@@ -56,6 +56,7 @@ function salaClave() {
 async function salaEntrar(hash) {
   if (sala.active) { salaChau(); salaCerrarConexiones(); }
   salaDejarDeSeguir('saliste');
+  salaLlamar(false, true);
   if (held) releaseHold();
   clearWorks();
   sala.active = true; sala.hash = hash;
@@ -81,6 +82,7 @@ function salaSalir() {
   salaCerrarConexiones();
   if (held) releaseHold();
   salaDejarDeSeguir('saliste');
+  salaLlamar(false, true);
   sala.active = false; sala.hash = null; sala.gente.clear();
   try { localStorage.removeItem('sala'); localStorage.removeItem('salaPass'); } catch (e) {}
   clearWorks();
@@ -328,6 +330,7 @@ function salaEnviarPresencia() {
   const L = held ? heldPose(basis()) : ((camOn && camReady) || bloqueOn ? previewPose(basis()) : null);
   if (!held && bloqueOn) est.bq = 1;
   if (salaSig) est.sg = salaSig.id;   // a quién sigo (v10.10): si me sigue a mí, no copiamos los giros en ronda
+  if (salaLlamo > Date.now()) est.ll = salaLlamo;   // estoy llamando a los demás ("vengan", v10.11): hasta cuándo, como id del llamado
   if (L) {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
@@ -375,6 +378,14 @@ function salaPersona(id, d) {
   p.cam = !!d.cam;
   p.bq = !!d.bq;               // tiene el bloque vacío equipado (v10.6)
   p.sg = typeof d.sg === 'string' ? d.sg : null;   // a quién sigue (v10.10)
+  // te llama ("vengan", v10.11): avisar una vez por llamado (aunque se reconecte y vuelva a llegar)
+  // (un llamado viejo, de alguien que quedó colgado en la base sin despedirse, no cuenta: vence en su reloj
+  // y, con 30 s de margen por la diferencia de hora entre celulares, en el mío)
+  const ll = Number.isFinite(d.ll) && d.ll > (d.t || 0) && d.ll + 30000 > Date.now();
+  p.llHasta = ll ? d.ll + 30000 : 0;
+  if (!ll) p.llAviso = false;
+  if (ll && salaLlAvisados.get(id) !== d.ll) { salaLlAvisados.set(id, d.ll); p.llAviso = true; diag('sala: me llama ' + id.slice(0, 4)); }
+  p.ll = ll;
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
@@ -610,8 +621,9 @@ function salaLejos(b) {
       c.el.style.transform = `translate(${sx.toFixed(1)}px,${sy.toFixed(1)}px)`;
       c.giro.style.transform = `rotate(${Math.atan2(dy, dx).toFixed(3)}rad)`;
       if (c.flecha !== flecha) { c.flecha = flecha; c.giro.style.display = flecha ? '' : 'none'; }
-      const m = Math.max(1, Math.round(len(sub(q, pos)))) + ' m';
+      const m = (p.ll ? 'te llama\n' : '') + Math.max(1, Math.round(len(sub(q, pos)))) + ' m';
       if (c.m.textContent !== m) c.m.textContent = m;
+      if (c.llama !== p.ll) { c.llama = p.ll; c.el.classList.toggle('llama', p.ll); }
       c.sx = sx; c.sy = sy; c.dx = dx / Math.hypot(dx, dy); c.dy = dy / Math.hypot(dx, dy);
       salaLejosPintar(c, id, p);
     }
@@ -635,6 +647,15 @@ function salaLejos(b) {
     else salaIrEl.style.transform = `translate(${xy[0].toFixed(1)}px,${xy[1].toFixed(1)}px) translate(-50%,-50%)`;
   }
   salaLejosEl.style.display = vistos.size || salaElegido ? '' : 'none';
+  // "vengan" (v10.11): avisar cuando alguien empieza a llamar; y mi llamado se vence solo al minuto
+  for (const p of sala.gente.values()) if (p.ll && Date.now() > p.llHasta) { p.ll = false; p.llAviso = false; }   // si no avisa que terminó
+  if (activo) for (const [id, p] of sala.gente) if (p.llAviso) {
+    p.llAviso = false;
+    if (!p.ll) continue;
+    showHint(vistos.has(id) ? 'te llaman: tocá su carita para ir' : held ? 'te llaman' : 'te llaman: tocalo para ir');
+    buzz(30);
+  }
+  if (salaLlamo && Date.now() > salaLlamo) salaLlamar(false, false, 'terminó el llamado');
 }
 
 // ¿tocaste a alguien de la sala? (v10.10) El cuerpo es un palito de la cabeza a los pies con ~30 cm de radio.
@@ -686,6 +707,27 @@ function salaDejarDeSeguir(por) {
   salaSigEl.style.display = 'none';
   diag('sala: dejé de seguir (' + por + ')');
   if (por !== 'fuiste' && por !== 'saliste' && por !== 'agarraste') showHint(por === 'se fue' ? 'se fue de la sala' : por === 'no llego' ? 'no llego hasta ahí: dejé de seguir' : 'dejaste de seguir');
+}
+// ---------- "vengan" (v10.11, propuesta 13 parte 3) ----------
+// desde el panel de la sala: durante un minuto, a los demás les titila tu carita ("te llama") para que vengan.
+// Se corta con "llamando ✕" arriba, con "dejar de llamar" en el panel o saliendo de la sala.
+const salaLlamandoEl = document.getElementById('llamando');
+let salaLlamo = 0;                 // hasta cuándo llamo (ms), 0 = no llamo
+const salaLlAvisados = new Map();  // id -> el llamado suyo que ya avisé
+const SALA_LLAMO_MS = 60000;
+salaLlamandoEl.addEventListener('pointerdown', e => e.stopPropagation());
+salaLlamandoEl.addEventListener('click', () => salaLlamar(false));
+function salaLlamar(on, callado, aviso) {
+  if (on && !sala.active) return;
+  if (!on && !salaLlamo) return;
+  salaLlamo = on ? Date.now() + SALA_LLAMO_MS : 0;
+  salaLlamandoEl.style.display = on ? '' : 'none';
+  diag(on ? 'sala: llamo a los demás' : 'sala: dejé de llamar');
+  if (on) { buzz(10); showHint('les avisé que vengan · titila tu carita un minuto'); }
+  // callado: saliendo de la sala (ya se mandó el "me fui": no volver a aparecer)
+  // (y en plena reconexión tampoco: que el "me fui" llegue antes; el timer lo manda al reabrir)
+  if (!callado) { if (!on) showHint(aviso || 'dejaste de llamar'); sala.ultimoEstado = ''; if (sala.esGente) salaEnviarPresencia(); }
+  salaPintar();
 }
 // cada cuadro, desde draw(): gira la vista con la suya y devuelve el paso [x, z] de este cuadro (o null)
 function salaSeguirPaso(dt) {
@@ -955,6 +997,10 @@ function salaPintar() {
     if (red.no) partes.push(`conectando con ${red.no}`);
   }
   document.getElementById('salaRed').textContent = partes.length ? 'cara y voz: ' + partes.join(' · ') : '';
+  document.getElementById('salaVenganFila').style.display = sala.active && (n || salaLlamo) ? '' : 'none';
+  const vb = document.getElementById('salaVengan');
+  vb.textContent = salaLlamo ? 'dejar de llamar' : 'vengan';
+  vb.classList.toggle('on', !!salaLlamo);
 }
 salaBtn.addEventListener('click', () => {
   const open = salaPanel.style.display === 'none';
@@ -973,5 +1019,10 @@ document.getElementById('salaVer').addEventListener('click', () => {
 });
 salaVer2.addEventListener('click', () => { salaVer2.textContent = salaVer2.textContent === 'ver' ? 'ocultar' : 'ver'; salaPintar(); });
 salaPass.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('salaEntrar').click(); });
+document.getElementById('salaVengan').addEventListener('click', () => {
+  const on = !salaLlamo;
+  salaLlamar(on);
+  if (on) salaPanel.style.display = 'none';
+});
 document.getElementById('salaSalir').addEventListener('click', () => { salaSalir(); salaPanel.style.display = 'none'; });
 salaPintar();
