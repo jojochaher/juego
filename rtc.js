@@ -418,6 +418,7 @@ document.getElementById('micBtn').addEventListener('click', () => {
   rtc.micOn = !rtc.micOn;
   try { localStorage.setItem('mic', rtc.micOn ? '1' : '0'); } catch (e) {}
   if (!rtc.micOn && rtc.mic) { rtc.mic.getTracks().forEach(t => t.stop()); rtc.mic = null; }
+  if (!rtc.micOn) sonCortarSala();   // una foto que grababa el sonido del lugar con este mic: se corta sin guardar (v10.17)
   rtcMedios();
 });
 function rtcCaraAlternar() {

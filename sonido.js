@@ -1,16 +1,19 @@
-// ---------- el sonido del lugar (v10.16, propuesta 4 de José, parte 1: el museo personal) ----------
-// Al sacar una foto se graban SON_MS del sonido de ahí (micrófono crudo, sin cancelación de eco ni de ruido: es el
-// ambiente). Al acercarte a esa foto se escucha en loop, con sonido espacial (como las voces), y se apaga al alejarte.
-// Suenan solo las SON_MAX más cercanas (con 200 fotos juntas sería un ruido). Se decodifica recién al acercarse y se
-// guardan pocas decodificadas (cada una son ~800 KB de memoria). ☰ → "sonido del lugar" lo apaga (pide el micrófono:
-// en el iPhone es un cartel más cada vez que se abre la app). Parte 1: solo en el museo (en la sala no graba todavía).
+// ---------- el sonido del lugar (v10.16-v10.17, propuesta 4 de José) ----------
+// Al sacar una foto se graban SON_MS del sonido de ahí. Al acercarte a esa foto se escucha en loop, con sonido espacial
+// (como las voces), y se apaga al alejarte. Suenan solo las SON_MAX más cercanas (con 200 fotos juntas sería un ruido).
+// Se decodifica recién al acercarse y se guardan pocas decodificadas (cada una son ~800 KB de memoria). ☰ → "sonido del
+// lugar" lo apaga. En el museo usa un micrófono propio, crudo (sin cancelación de eco ni de ruido: es el ambiente; en el
+// iPhone es un cartel más cada vez que se abre la app). En la sala (v10.17) graba del micrófono de la voz (no pide otro:
+// en el iPhone un segundo pedido puede callar el de la voz), así que con "mic: no" las fotos de la sala no graban; se sube
+// a imgs/<id>~son y los demás lo bajan recién al acercarse (salaSonSubir / salaSonBajar en sala.js).
+// También graba al llenar un bloque (o cambiar una foto) con la cámara (v10.17); de la galería no.
 // Ojo: nada de lo que corre al cargar puede usar cosas de game.js (solo adentro de funciones).
 const SON_MS = 4000, SON_BPS = 24000;
 const SON_CERCA = 1.5, SON_LEJOS = 5;     // a menos de SON_CERCA suena entero; a SON_LEJOS ya no suena
 const SON_MAX = 3;                        // cuántas suenan a la vez (las más cercanas)
 const SON_CACHE = 6;                      // cuántas decodificadas se guardan
 const SON_MIC_MS = 60000;                 // el micrófono queda abierto un rato después de grabar (si no, otro cartel)
-const son = { on: true, grabando: 0, micNo: false, mic: null, micP: null, micT: null, sonando: new Map(), bufs: new Map(), t: 0 };
+const son = { on: true, grabando: 0, micNo: false, mic: null, micP: null, micT: null, sonando: new Map(), bufs: new Map(), t: 0, enSala: new Set() };
 try { son.on = localStorage.getItem('sonido') !== '0'; } catch (e) {}
 
 function sonTipo() {
@@ -35,18 +38,39 @@ function sonMicSoltar() {
   clearTimeout(son.micT);
   son.micT = setTimeout(sonMicCerrar, sala.active ? 0 : SON_MIC_MS);   // en la sala ya hay otro micrófono (el de la voz): este se cierra ya
 }
-// graba el sonido de la foto recién sacada; devuelve un Blob o null. listo(blob) se llama al terminar.
+// en la sala: una copia de la pista del micrófono de la voz (la crudo, antes del efecto de voz), o null si está apagado
+function sonMicSala() {
+  const t = rtc.mic && rtc.mic.getAudioTracks().find(t => t.readyState === 'live');
+  if (!t) return null;
+  const c = t.clone(); c.enabled = true;
+  return new MediaStream([c]);
+}
+// graba el sonido de la foto recién sacada. listo(blob) se llama al terminar (blob null si no se pudo).
 async function sonGrabar(id, listo) {
-  if (!son.on || son.micNo || sala.active) return;
+  if (!son.on || (son.micNo && !sala.active)) return;
   const tipo = sonTipo();
   if (!tipo) { if (!son.avisoTipo) { son.avisoTipo = true; diag('sonido: este navegador no graba audio'); } return; }
+  let copia = null;
+  if (sala.active) {
+    copia = sonMicSala();
+    if (!copia) {   // con "mic: no" no se graba (el micrófono apagado es apagado)
+      if (rtc.micOn) diag('sonido: el micrófono de la sala todavía no está');
+      else if (!son.avisoSalaMic) { son.avisoSalaMic = true; showHint('con el mic apagado las fotos de la sala quedan sin el sonido del lugar'); }
+      return;
+    }
+  }
   son.grabando++;
   let fin = false;
-  const terminar = blob => { if (fin) return; fin = true; son.grabando--; sonMicSoltar(); listo(blob); };
+  const terminar = blob => {
+    if (fin) return; fin = true; son.grabando--; son.enSala.delete(terminar);
+    if (copia) copia.getTracks().forEach(t => t.stop()); else sonMicSoltar();
+    listo(blob);
+  };
+  if (copia) son.enSala.add(terminar);   // apagar el mic (o salir de la sala) en medio la corta y no se guarda nada
   setTimeout(() => { if (!fin) diag('sonido: la grabación no terminó'); terminar(null); }, SON_MS + 8000);   // si el micrófono o el grabador no responden nunca
   sonCallar();
   try {
-    const s = await Promise.race([sonMic(), new Promise((_, rej) => setTimeout(() => rej(new Error('el micrófono no responde')), 6000))]);
+    const s = copia || await Promise.race([sonMic(), new Promise((_, rej) => setTimeout(() => rej(new Error('el micrófono no responde')), 6000))]);
     if (fin) return;
     await new Promise(r => setTimeout(r, 150));   // que lo que suena termine de callarse (si no, se graba)
     if (fin) return;
@@ -71,13 +95,15 @@ async function sonGrabar(id, listo) {
     terminar(null);
   }
 }
+// el mic de la voz se apagó o se cerró: las grabaciones de la sala se cortan sin guardar
+function sonCortarSala() { for (const t of [...son.enSala]) t(null); }
 function sonAlternar() {
   son.on = !son.on;
   son.micNo = false;
   try { localStorage.setItem('sonido', son.on ? '1' : '0'); } catch (e) {}
   sonPintar();
   if (!son.on) { sonApagarTodo(); sonMicCerrar(); }
-  showHint(son.on ? 'cada foto que saques graba 4 s del sonido de ahí: se escucha al acercarte' + (sala.active ? '<br>(por ahora solo en tu museo, en las salas todavía no)' : '')
+  showHint(son.on ? 'cada foto que saques graba 4 s del sonido de ahí: se escucha al acercarte' + (sala.active && !rtc.micOn ? '<br>(en la sala, con el mic prendido)' : '')
     : 'sin sonido del lugar: las fotos no graban ni suenan');
 }
 function sonPintar() {
@@ -150,9 +176,12 @@ function sonPaso(b) {
   son.t = ahora;
   const cerca = [];
   for (const w of works) {
-    if (!w.son || w.rota || w === cieloW) continue;
+    if (w.rota || w.vacio || w === cieloW) continue;
+    if (!w.son && !(w.so && sala.active)) continue;
     const d = sonDist(w, pos);
-    if (d < SON_LEJOS) cerca.push({ w, d });
+    if (d >= SON_LEJOS) continue;
+    if (!w.son) { salaSonBajar(w); continue; }   // en la sala el sonido se baja recién al acercarse
+    cerca.push({ w, d });
   }
   if (!cerca.length && !son.sonando.size) return;
   const ctx = rtcAudio();

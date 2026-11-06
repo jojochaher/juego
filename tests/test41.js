@@ -1,6 +1,6 @@
 // el sonido del lugar (v10.16, propuesta 4 parte 1): cada foto que sacás en el museo graba 4 s de sonido; al acercarte
 // suena en loop (las 3 más cercanas), se apaga al alejarte, se recuerda al recargar, se calla mientras graba, ☰ lo apaga,
-// cambiar o vaciar la imagen le saca el sonido, en la sala no graba (todavía).
+// cambiar o vaciar la imagen le saca el sonido, en la sala no abre su propio micrófono.
 // uso: node tests/test41.js .
 const { chromium, devices } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path');
@@ -88,7 +88,8 @@ const ok = (n, c) => { if (!c) fallas++; console.log((c ? 'OK   ' : 'FAIL ') + n
   ok('en la sala no suena lo del museo', await espera(pg, () => __game.son.sonando.size === 0, null, 3000));
   await pg.tap('#equip'); await espera(pg, () => __game.camReady); await pg.waitForTimeout(300);
   await pg.tap('#shoot'); await pg.waitForTimeout(300);
-  ok('en la sala no graba (todavía)', (await pg.evaluate(() => __game.son.grabando)) === 0);
+  // desde v10.17 en la sala también graba, pero del micrófono de la voz (test42): el propio del sonido queda cerrado
+  ok('en la sala graba (del micrófono de la voz)', await espera(pg, () => __game.son.grabando === 1, null, 1500) || await pg.evaluate(() => !__game.rtc.mic));
   ok('en la sala el micrófono del sonido está cerrado', await pg.evaluate(() => !__game.son.mic));
 
   ok('sin errores', !pg.errs.length && !/error/i.test(await pg.textContent('#hint')));

@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.16';
+const VERSION = 'v10.17';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -370,6 +370,7 @@ function addWork(o, img) {
   if (o.de && typeof o.de === 'object') w.de = o.de;      // quién la puso (sala; ya viene limpio) y cuándo (huellas, v10.12)
   if (Number.isFinite(o.t0)) w.t0 = o.t0;
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
+  if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
   setBuf(w);
   works.push(w);
   return w;
@@ -427,12 +428,26 @@ function llenarBloque(src) {
   const w = held.work, L = held.L, asp = L.h / L.w;
   const c = recorteCentrado(src, asp);
   const antes = guardarComoEstaba(w);
-  w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, c };
+  const r = w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, c };
+  if (src === video) sonGrabar(w.id, sb => sonDelRelleno(w, r, sb));   // con la cámara también graba el sonido de ahí (v10.17)
   w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice(); w.aspect = asp;
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
   ui();
+}
+// el sonido grabado al llenar con la cámara: si todavía no la soltaste, espera en el relleno; si ya la soltaste con ✓ (y
+// sigue siendo esa imagen), se pega ahora. Si la soltaste sin ✓ o elegiste otra imagen, no va.
+function sonDelRelleno(w, r, sb) {
+  if (!sb || !works.includes(w)) return;
+  if (w.relleno === r) { r.son = sb; return; }
+  if (!r.imgN || w.imgN !== r.imgN || w.vacio || w.relleno) return;
+  sonPegar(w, sb, r.subida);
+}
+function sonPegar(w, sb, subida) {
+  w.son = sb;
+  if (sala.active) { if (subida) salaSonSubir(w, sb, subida); return; }
+  store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && !q.result.vacio && s.put({ ...q.result, son: sb }); }).catch(() => {});
 }
 // sacarle la imagen a la foto que tenés en la mano: queda un bloque vacío (se guarda recién al soltar con ✓)
 function vaciarFoto() {
@@ -886,7 +901,11 @@ function drop() {
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
   // museo: si la cambiás otra vez antes de que se guarde, gana la última. Otra imagen (o vacía): el sonido era del lugar de la vieja
-  if (relleno) { w.imgN = (w.imgN || 0) + 1; w.son = null; }
+  if (relleno) {
+    if (sala.active) salaSonBorrar(w);   // en la sala, el sonido de la imagen vieja se borra (si no tenía, no cuesta nada)
+    w.imgN = (w.imgN || 0) + 1; w.son = null; w.so = undefined; w.sonPedido = null;
+    relleno.imgN = w.imgN;                                  // si el sonido de la cámara llega después, se pega a esta imagen
+  }
   const imgN = w.imgN;
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
@@ -894,7 +913,8 @@ function drop() {
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
   if (sala.active) {
     if (relleno && relleno.vaciar) salaVaciar(w);
-    else relleno ? salaShoot({ id: w.id, ...pose }, relleno.c, w) : salaSavePose(w);
+    else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
+    else salaSavePose(w);
   } else if (relleno && relleno.vaciar) {
     store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose, blob: null, vacio: true, son: null }); }).catch(() => {});
   } else {
@@ -903,8 +923,9 @@ function drop() {
     if (relleno) relleno.c.toBlob(blob => {
       if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
       if (w.imgN !== imgN) return;   // mientras tanto la vaciaste o la cambiaste
-      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false, son: null }); }).catch(() => {});
+      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false, son: w.son || null }); }).catch(() => {});
     }, 'image/jpeg', 0.85);
+    if (relleno && relleno.son) w.son = relleno.son;   // el sonido que grabó la cámara al llenarlo (lo guarda el put de arriba)
   }
   buzz(12);
   releaseHold();
@@ -1177,16 +1198,15 @@ function shoot() {
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose, t0: Date.now() };
   if (sala.active) o.de = salaDe();
   const w = addWork(o, c);
-  if (sala.active) salaShoot(o, c);
-  else {
-    c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
-    // el sonido del lugar (v10.16): 4 s desde que la sacaste; se pega a la foto si sigue siendo la misma imagen
-    sonGrabar(o.id, sb => {
-      if (!sb || !works.includes(w) || w.vacio || w.relleno || w.imgN) return;
-      w.son = sb;
-      store('readwrite', s => { const q = s.get(o.id); q.onsuccess = () => q.result && q.result.blob && !q.result.vacio && s.put({ ...q.result, son: sb }); }).catch(() => {});
-    });
-  }
+  const subida = sala.active ? salaShoot(o, c) : null;
+  if (!sala.active) c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
+  // el sonido del lugar (v10.16; en la sala desde v10.17): 4 s desde que la sacaste; se pega a la foto si sigue siendo la misma imagen
+  sonGrabar(o.id, sb => {
+    if (!sb || !works.includes(w) || w.vacio || w.relleno || w.imgN) return;
+    w.son = sb;
+    if (subida) salaSonSubir(w, sb, subida);
+    else store('readwrite', s => { const q = s.get(o.id); q.onsuccess = () => q.result && q.result.blob && !q.result.vacio && s.put({ ...q.result, son: sb }); }).catch(() => {});
+  });
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);

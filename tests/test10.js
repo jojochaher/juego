@@ -71,9 +71,15 @@ const mock = require('./mockdb.js');
   await B.touchscreen.tap(vw.width/2, vw.height/2); await B.waitForTimeout(1200);
   await B.tap('#trash');
   ok('B borra y A deja de verla', await wait(A, () => __game.works.length === 0));
-  const dump = await (await fetch('http://localhost:8150/__dump')).json();
-  const s = Object.values(dump.salas || {}).map(x => Object.keys(x.imgs || {}).length + Object.keys(x.poses || {}).length);
-  ok('la base quedó sin la foto ni su imagen', s.every(n => n === 0));
+  // desde v10.17 la foto puede tener su sonido del lugar subiendo todavía: se le da unos segundos para limpiarse
+  let s = [];
+  for (let i = 0; i < 25; i++) {
+    const dump = await (await fetch('http://localhost:8150/__dump')).json();
+    s = Object.values(dump.salas || {}).map(x => Object.keys(x.imgs || {}).length + Object.keys(x.poses || {}).length);
+    if (s.every(n => n === 0)) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  ok('la base quedó sin la foto ni su imagen (ni su sonido)', s.every(n => n === 0));
   // recargar dentro de la sala
   await A.reload(); await A.waitForTimeout(800);
   ok('al recargar sigue en la sala', await A.evaluate(() => __game.sala.active));

@@ -138,8 +138,9 @@ setInterval(() => {
 }, 10000);
 
 // ---------- obras compartidas ----------
-// iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo'];
+// iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15);
+// so: cuándo se grabó su sonido del lugar (v10.17; el sonido está en imgs/<id>~son)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so'];
 const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
 
 function salaCambioObras(path, data, type) {
@@ -163,6 +164,15 @@ function salaCambioObras(path, data, type) {
     if (p && typeof p === 'object') { if (v === undefined) delete p.cielo; else p.cielo = v; }
     return;
   }
+  if (parts.length === 2 && parts[1] === 'so') {      // el sonido del lugar (v10.17) también se escribe solo
+    const v = Number.isFinite(data) && data > 0 ? data : undefined;
+    const w = works.find(x => x.id === id);
+    if (w && !w.subiendo) salaSonMarca(w, v);
+    if (w && w.llenadoAfuera) { if (v === undefined) delete w.llenadoAfuera.so; else w.llenadoAfuera.so = v; }   // al soltar se respeta
+    const p = sala.cargando.get(id);
+    if (p && typeof p === 'object') { if (v === undefined) delete p.so; else p.so = v; }
+    return;
+  }
   if (parts.length > 1) {                               // cambió un campo suelto: pedir la pose entera
     const hashAlPedir = sala.hash;
     fetch(salaUrl('poses/' + id)).then(r => r.json()).then(p => {
@@ -182,6 +192,7 @@ function salaUpsert(id, pose) {
   const w = works.find(x => x.id === id);
   if (w) {
     w.cielo = pose.cielo;                               // el cielo vale siempre lo de la base (también si la tengo en la mano)
+    if (!w.subiendo) salaSonMarca(w, pose.so);          // y el sonido (salvo mientras subo una imagen mía: esa no tiene)
     if (held && held.work === w) {                      // la estoy editando yo: gana la pose mía al soltar
       // pero si otro le cambió la imagen (la llenó, la cambió o la vació), se anota: al soltar se respeta (salvo que la hayas cambiado vos)
       const vacioAntes = w.relleno ? w.relleno.vacioViejo : w.vacio;
@@ -189,14 +200,14 @@ function salaUpsert(id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv; Object.assign(w, soloPose(pose)); w.iv = iv; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
     if (pose.vacio && sala.cargando.has(id)) sala.cargando.set(id, pose);   // se estaba bajando una imagen que ya no va
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
-    if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; }   // la vaciaron
+    if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
     Object.assign(w, soloPose(pose));
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
@@ -243,6 +254,8 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
     Object.assign(w, soloPose(ultima)); w.vacio = false;
+    w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
+    salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     if (ultima.iv && ultima.iv !== ivPedido) salaLlenarDeAfuera(w, id, ultima, 0, true);   // la cambiaron otra vez mientras bajaba
@@ -298,7 +311,9 @@ function salaShoot(o, canvas, w) {
       return salaApi('poses/' + o.id, 'PUT', p);
     });
   };
-  salaEnCola(w, tarea).catch(() => { if (w && w.subidaN === n) w.subiendo = false; showHint('no se pudo subir la foto a la sala'); });
+  const p = salaEnCola(w, tarea);
+  p.catch(() => { if (w && w.subidaN === n) w.subiendo = false; showHint('no se pudo subir la foto a la sala'); });
+  return p;   // el sonido del lugar sube después de la foto
 }
 // los cambios de imagen de una misma foto (subir, vaciar) van de a uno y en orden, para que no se pisen
 function salaEnCola(w, tarea) {
@@ -311,14 +326,17 @@ function salaSavePose(w) {
   if (w.subiendo) return;   // la foto del bloque todavía sube: al terminar manda la pose de ahora
   const p = soloPose(w);
   const a = w.llenadoAfuera;   // otro le cambió la imagen mientras la tenía (y yo no): se respeta lo suyo
-  if (a) { if (a.vacio) { p.vacio = true; delete p.iv; } else { p.vacio = false; if (a.iv) p.iv = a.iv; else delete p.iv; } }
+  if (a) {
+    if (a.vacio) { p.vacio = true; delete p.iv; } else { p.vacio = false; if (a.iv) p.iv = a.iv; else delete p.iv; }
+    if (w.so) p.so = w.so; else delete p.so;   // el sonido va con su imagen (w.so sigue a la base: salaSonMarca)
+  }
   salaApi('poses/' + w.id, 'PUT', p).catch(() => showHint('no se pudo guardar en la sala'));
 }
 // al soltar algo (con ✓ o sin): si otro le había puesto foto mientras lo tenía, bajarla ahora
 function salaSoltado(w) {
   if (!w.llenadoAfuera || !works.includes(w)) return;
   const p = w.llenadoAfuera; w.llenadoAfuera = null;
-  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; } }
+  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; } }
   else if (w.vacio || (p.iv && p.iv !== w.iv)) salaLlenarDeAfuera(w, w.id, p, 0, true);
 }
 // le sacaste la imagen (v10.7): primero la pose vacía (así nadie la vuelve a pedir), después se borra la imagen
@@ -327,7 +345,7 @@ function salaVaciar(w) {
   const n = w.subidaN, hash = sala.hash;
   salaEnCola(w, () => {
     if (w.subidaN !== n || !sala.active || sala.hash !== hash || !works.includes(w)) return;   // otro cambio, otra sala o la borraste
-    const p = soloPose(w); p.vacio = true; delete p.iv;
+    const p = soloPose(w); p.vacio = true; delete p.iv; delete p.so;
     return salaApi('poses/' + w.id, 'PUT', p).then(() => salaApi('imgs/' + w.id, 'DELETE'));
   }).catch(() => showHint('no se pudo vaciar en la sala'));
 }
@@ -338,7 +356,77 @@ function salaCielo(w) {
 }
 function salaRemove(w) {
   sala.borradas.add(w.id);
-  salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {});
+  salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {})
+    .then(() => salaApi('imgs/' + w.id + '~son', 'DELETE')).catch(() => {});   // su sonido, si tenía (aunque no lo sepa: un DELETE de nada no cuesta)
+}
+
+// ---------- el sonido del lugar en la sala (propuesta 4, parte 2, v10.17) ----------
+// Va como dataURL en imgs/<id>~son (las reglas aceptan ahí cualquier texto < 400 KB; ~12 KB de audio son ~16 KB) y la
+// pose lleva `so` = cuándo se grabó, que se escribe solo (como el cielo) después de subir el sonido. Los demás no lo
+// bajan al entrar: recién al acercarse a menos de SON_LEJOS (salaSonBajar, desde sonPaso). Otra imagen o vaciarla le
+// saca `so` (drop) y se borra el sonido. Clientes viejos (v10.16 o antes) sacan `so` al mover la foto: queda muda.
+const SALA_SON_MAX = 400000;
+function salaSonMarca(w, so) {
+  so = Number.isFinite(so) && so > 0 ? so : undefined;
+  if (w.so === so) return;
+  w.so = so; w.son = null; w.sonPedido = null;   // otro sonido (o ninguno): el que tenía ya no va
+}
+function salaSonDataUrl(blob) {
+  return new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(f.result); f.onerror = () => rej(f.error); f.readAsDataURL(blob); });
+}
+// lo que llega por la red: solo un audio en base64 (si no, nada)
+function salaSonBlob(src) {
+  if (typeof src !== 'string' || src.length >= SALA_SON_MAX) return null;
+  const m = /^data:(audio\/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*);base64,([A-Za-z0-9+/]+=*)$/.exec(src);
+  if (!m) return null;
+  try {
+    const bin = atob(m[2]), a = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    return a.length > 200 ? new Blob([a], { type: m[1] }) : null;
+  } catch (e) { return null; }
+}
+// subir el sonido recién grabado de w. antes: la subida de su imagen (el sonido va después)
+function salaSonSubir(w, blob, antes) {
+  const hash = sala.hash, n = w.imgN || 0, so = Date.now();
+  const sigue = () => sala.active && sala.hash === hash && works.includes(w) && (w.imgN || 0) === n && !w.vacio && w.son === blob;
+  let fotoNo = false;
+  // el tipo sin parámetros ("audio/mp4", "audio/webm"): con codecs="..." entre comillas los demás no lo aceptarían
+  salaSonDataUrl(new Blob([blob], { type: (blob.type || 'audio/mp4').split(';')[0].trim() })).then(src => {
+    if (src.length >= SALA_SON_MAX) throw new Error('el sonido es muy grande');
+    return Promise.resolve(antes).catch(() => { fotoNo = true; }).then(() => fotoNo ? null : salaEnCola(w, () => {   // si la foto no subió, el sonido tampoco
+      if (!sigue()) return;
+      // si mientras subía la borraron (acá o desde otro celu), el sonido no queda suelto en la base
+      const huerfano = () => sala.active && sala.hash === hash && (!works.includes(w) || sala.borradas.has(w.id));
+      const borrar = () => salaApi('imgs/' + w.id + '~son', 'DELETE').catch(() => {});
+      return salaApi('imgs/' + w.id + '~son', 'PUT', src).then(() => {
+        if (!sigue()) return huerfano() ? borrar() : undefined;
+        w.so = so; w.sonPedido = null;
+        return salaApi('poses/' + w.id + '/so', 'PUT', so).catch(e => { if (huerfano()) return borrar(); throw e; });
+      });
+    }));
+  }).catch(e => { diag('sonido: no lo pude subir a la sala (' + (e && e.message || e) + ')'); showHint('no se pudo subir el sonido de la foto a la sala'); });
+}
+// otra imagen o vaciada: el sonido viejo se borra (la pose nueva ya va sin `so`)
+function salaSonBorrar(w) {
+  const hash = sala.hash;
+  salaEnCola(w, () => sala.active && sala.hash === hash && salaApi('imgs/' + w.id + '~son', 'DELETE')).catch(() => {});
+}
+// bajar el sonido de una foto de la sala (al acercarse). Si todavía no subió (la pose llegó antes), reintenta un par de veces
+function salaSonBajar(w) {
+  const so = w.so, e = w.sonPedido;
+  if (!so) return;
+  if (e && e.so === so && (e.cargando || e.intentos >= 4 || performance.now() < e.desde)) return;
+  const p = w.sonPedido = { so, cargando: true, intentos: e && e.so === so ? e.intentos + 1 : 1, desde: 0 };
+  const hash = sala.hash;
+  fetch(salaUrl('imgs/' + w.id + '~son')).then(r => r.json()).then(src => {
+    if (!sala.active || sala.hash !== hash || w.so !== so || !works.includes(w)) return;
+    const b = salaSonBlob(src);
+    if (!b) throw new Error(src === null ? 'todavía no está' : 'no es un sonido');
+    w.son = b; p.cargando = false;
+  }).catch(err => {
+    p.cargando = false; p.desde = performance.now() + 3000 * p.intentos;
+    if (p.intentos >= 4) diag(`sonido ${String(w.id).slice(-6)}: no lo pude bajar (${err && err.message || err})`);
+  });
 }
 
 // ---------- huellas (propuesta 2, parte 1, v10.12): quién puso cada foto y lo nuevo desde tu última vez ----------
@@ -376,6 +464,7 @@ function salaHuellaPose(pose) {
   if ('de' in pose) { const d = salaDeLimpio(pose.de); if (d) pose.de = d; else delete pose.de; }
   if ('t0' in pose && !Number.isFinite(pose.t0)) delete pose.t0;
   if ('cielo' in pose && !Number.isFinite(pose.cielo)) delete pose.cielo;   // el cielo (v10.15): un número o nada
+  if ('so' in pose && !(Number.isFinite(pose.so) && pose.so > 0)) delete pose.so;   // el sonido (v10.17): cuándo se grabó o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -1102,6 +1191,7 @@ async function salasDetalle(e) {
       try {
         await fetch(salaUrlDe(e.h, 'poses/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id), { method: 'DELETE' });
+        await fetch(salaUrlDe(e.h, 'imgs/' + id + '~son'), { method: 'DELETE' }).catch(() => {});   // su sonido del lugar, si tenía
         m.remove(); ids = ids.filter(i => i !== id);
         cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}`;
       } catch (err) { m.style.opacity = 1; showHint('no se pudo borrar'); }
