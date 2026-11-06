@@ -1102,6 +1102,39 @@ function salasLista() {
     lista.append(fila);
   }
 }
+// ---------- cuánto ocupa (v10.18, propuesta 5): la base gratis tiene 1 GB guardado y 10 GB por mes de bajada.
+// No hay forma de pedirle a Firebase el tamaño por REST: se cuenta cuántas imágenes y sonidos hay (?shallow=true,
+// solo las claves) y se estima con el peso medio de una foto, que se mide de verdad cada vez que se bajan las
+// miniaturas de una sala ('pesoFotos' = {n, b}). La cifra exacta está en la consola.
+const SALA_PESO_FOTO = 100000, SALA_PESO_SON = 16000, SALA_BASE_B = 1e9, SALA_BAJA_B = 10e9;
+const SALA_CONSOLA = 'https://console.firebase.google.com/project/juego-dd2eb/database/juego-dd2eb-default-rtdb/usage';
+function salaPesoFoto() {
+  try { const o = JSON.parse(localStorage.getItem('pesoFotos') || 'null'); if (o && o.n >= 3 && Number.isFinite(o.b / o.n) && o.b / o.n > 1000) return o.b / o.n; } catch (e) {}
+  return SALA_PESO_FOTO;
+}
+function salaPesoMedido(b) {   // una foto bajada: suma a la media (las últimas ~300 pesan más)
+  if (!(b > 0)) return;
+  try {
+    let o = JSON.parse(localStorage.getItem('pesoFotos') || 'null');
+    if (!o || !(o.n >= 0) || !(o.b >= 0)) o = { n: 0, b: 0 };
+    o.n++; o.b += b;
+    if (o.n > 300) { o.n /= 2; o.b /= 2; }
+    localStorage.setItem('pesoFotos', JSON.stringify(o));
+  } catch (e) {}
+}
+function salaMB(b) {
+  const mb = b / 1e6;
+  const t = mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : mb >= 10 ? Math.round(mb) + ' MB' : mb >= 1 ? mb.toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1000)) + ' KB';
+  return t.replace('.', ',');
+}
+const salaPct = (b, de) => { const p = b / de * 100; return p < 0.1 ? 'menos del 0,1%' : (p < 10 ? p.toFixed(1) : Math.round(p)).toString().replace('.', ',') + '%'; };
+// claves de imgs/ de una sala → cuántas fotos y cuántos sonidos (imgs/<id>~son)
+function salaContarImgs(o) {
+  let f = 0, s = 0;
+  for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.endsWith('~son')) s++; else f++;
+  return { f, s, b: f * salaPesoFoto() + s * SALA_PESO_SON, bf: f * salaPesoFoto() };   // bf: lo que se baja al entrar (los sonidos, recién al acercarse)
+}
+
 // todas las salas (admin): la lista sale de la base con el token de José; de las que no conozco
 // la contraseña muestro el principio del hash
 let salasGen = 0;
@@ -1119,6 +1152,15 @@ async function salasListaTodas(lista) {
   if (gen !== salasGen || !salasTodas || salasViendo) return;
   const conocidas = new Map(salaRegistro().map(x => [x.h, x]));
   nota.textContent = hs.length ? `${hs.length} sala${hs.length === 1 ? '' : 's'}. las que no tienen nombre son de contraseñas que no usaste acá.` : 'no hay ninguna sala.';
+  // cuánto ocupa todo (se va llenando a medida que se cuentan las salas)
+  const peso = document.createElement('div'); peso.className = 'nota'; peso.id = 'salasPeso';
+  const pesoTxt = document.createElement('div'), pesoBaja = document.createElement('div');
+  pesoTxt.style.cssText = 'color: rgba(255,255,255,0.85); font-size: 13px';
+  const consola = document.createElement('a'); consola.href = SALA_CONSOLA; consola.target = '_blank'; consola.rel = 'noopener';
+  consola.textContent = 'la cifra exacta, en la consola de Firebase ›'; consola.style.color = 'rgba(255,255,255,0.75)';
+  pesoTxt.textContent = hs.length ? 'calculando cuánto ocupan…' : 'la base está vacía (el plan gratis guarda hasta 1 GB).';
+  peso.append(pesoTxt, pesoBaja, consola); lista.append(peso);
+  const nombre = e => e.p != null ? '«' + e.p + '»' : 'una sin nombre (' + e.h.slice(0, 8) + ')';
   const filas = [];
   for (const h of hs) {
     const k = conocidas.get(h);
@@ -1129,7 +1171,7 @@ async function salasListaTodas(lista) {
     const cuantas = document.createElement('div'); cuantas.className = 'nota'; cuantas.textContent = sala.active && sala.hash === h ? 'estás acá' : '…';
     const ver = document.createElement('div'); ver.className = 'pill'; ver.textContent = 'ver';
     ver.addEventListener('click', () => salasDetalle(e));
-    fila.append(nom, cuantas, ver); lista.append(fila); filas.push([h, cuantas]);
+    fila.append(nom, cuantas, ver); lista.append(fila); filas.push([h, cuantas, e]);
   }
   if (hs.length) {
     const todas = document.createElement('div'); todas.className = 'pill rojo'; todas.textContent = 'borrar todas las salas';
@@ -1153,24 +1195,49 @@ async function salasListaTodas(lista) {
     });
     lista.append(todas);
   }
-  // cuántas fotos tiene cada una (de a una, para no tirar 100 pedidos juntos)
-  for (const [h, el] of filas) {
+  // cuántas fotos tiene cada una y cuánto pesa (de a una sala, para no tirar 100 pedidos juntos; solo claves)
+  let total = 0, contadas = 0, fallas = 0, mayor = null;
+  const pintarPeso = fin => {
+    if (!hs.length) return;
+    const aprox = !contadas ? '' : total ? `en total ≈ ${salaMB(total)} de 1 GB (${salaPct(total, SALA_BASE_B)})` : 'no hay fotos guardadas (el plan gratis guarda hasta 1 GB)';
+    pesoTxt.textContent = (aprox || 'no pude contar ninguna') + (fin ? (fallas ? ` · ${fallas} sin contar` : '') : ` · contando ${contadas + fallas}/${hs.length}…`);
+    if (fin && mayor && mayor.b > 0) {
+      const veces = Math.floor(SALA_BAJA_B / mayor.b);
+      pesoBaja.textContent = `lo que más gasta es lo que se baja: cada vez que alguien entra a una sala baja todas sus fotos (los sonidos, recién al acercarse). ` +
+        `la más pesada es ${nombre(mayor.e)}, ≈ ${salaMB(mayor.b)} por entrada; el plan gratis deja bajar 10 GB por mes ` +
+        `(${veces > 9999 ? 'más de 10.000' : '≈ ' + veces.toLocaleString('es-AR')} entradas a esa sala). ` +
+        `es una estimación: cada foto ≈ ${salaMB(salaPesoFoto())}, cada sonido ≈ ${salaMB(SALA_PESO_SON)}.`;
+    }
+  };
+  for (const [h, el, e] of filas) {
     if (gen !== salasGen || !salasTodas || salasPanel.style.display === 'none' || !el.isConnected) return;
-    if (sala.active && sala.hash === h) continue;
+    const aca = sala.active && sala.hash === h;
     try {
-      const n = Object.keys((await (await fetch(salaUrlDe(h, 'poses') + '?shallow=true')).json()) || {}).length;
-      el.textContent = n ? `${n} foto${n === 1 ? '' : 's'}` : 'vacía';
-    } catch (err) { el.textContent = '?'; }
+      const [ps, is] = await Promise.all(['poses', 'imgs'].map(async p => {
+        const r = await fetch(salaUrlDe(h, p) + '?shallow=true');
+        if (!r.ok) throw new Error('error ' + r.status);
+        return r.json();
+      }));
+      if (gen !== salasGen) return;
+      const n = Object.keys(ps && typeof ps === 'object' ? ps : {}).length, c = salaContarImgs(is);
+      el.textContent = (aca ? 'estás acá' : n ? `${n} foto${n === 1 ? '' : 's'}` : 'vacía') + (c.b ? ' · ≈ ' + salaMB(c.b) : '');
+      total += c.b; contadas++;
+      if (!mayor || c.bf > mayor.b) mayor = { b: c.bf, e };
+    } catch (err) { if (!aca) el.textContent = '?'; fallas++; }
+    pintarPeso(false);
   }
+  pintarPeso(true);
 }
 async function salasEntrarA(e) {
   try { if (e.p != null) localStorage.setItem('salaPass', JSON.stringify({ h: e.h, p: e.p })); else localStorage.removeItem('salaPass'); } catch (err) {}
   salasPanel.style.display = 'none';
   await salaEntrar(e.h);
 }
-let salasViendo = null;
+let salasViendo = null, salasDetGen = 0;
+const salasMedidas = new Set();   // fotos ya medidas en esta apertura de la app (para que volver a ver una sala no cargue la media)
 async function salasDetalle(e) {
   salasViendo = e;
+  const gen = ++salasDetGen, vigente = () => gen === salasDetGen && salasViendo === e;
   document.getElementById('salasLista').style.display = 'none';
   document.getElementById('salasDetalle').style.display = '';
   document.getElementById('salasNombre').textContent = e.p != null ? e.p : 'sin nombre · ' + e.h.slice(0, 8);
@@ -1179,10 +1246,22 @@ async function salasDetalle(e) {
   const borrar = document.getElementById('salasBorrar'); borrar.textContent = 'borrar sala'; borrar.dataset.seguro = '';
   const fotos = document.getElementById('salasFotos'); fotos.innerHTML = '';
   const cuenta = document.getElementById('salasCuenta'); cuenta.textContent = ' · cargando…';
-  let ids = [];
+  let ids = [], sons = new Set(), bytes = 0, medidas = 0, midiendo = true, faltan = 0;
   try { ids = Object.keys((await (await fetch(salaUrlDe(e.h, 'poses') + '?shallow=true')).json()) || {}); }
   catch (err) { cuenta.textContent = ' · no pude conectarme'; return; }
-  cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}`;
+  try {   // qué fotos tienen sonido del lugar (imgs/<id>~son)
+    const o = await (await fetch(salaUrlDe(e.h, 'imgs') + '?shallow=true')).json();
+    for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.endsWith('~son')) sons.add(k.slice(0, -4));
+  } catch (err) { faltan++; }
+  if (!vigente()) return;
+  // lo que pesa de verdad: se suma a medida que bajan las miniaturas (los sonidos, estimados)
+  const pintarCuenta = () => {
+    if (!vigente()) return;   // otra sala ya está a la vista: no le piso la cabecera
+    const fin = !midiendo, pesa = bytes + sons.size * SALA_PESO_SON;
+    cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}` +
+      (fin ? (pesa ? ` · ${sons.size || faltan ? '≈ ' : ''}${salaMB(pesa)}` : '') : medidas ? ` · midiendo… ${salaMB(pesa)}` : '');
+  };
+  pintarCuenta();
   for (const id of ids) {
     const m = document.createElement('div'); m.className = 'miniFoto';
     const x = document.createElement('div'); x.className = 'x'; x.textContent = '✕';
@@ -1193,19 +1272,26 @@ async function salasDetalle(e) {
         await fetch(salaUrlDe(e.h, 'imgs/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id + '~son'), { method: 'DELETE' }).catch(() => {});   // su sonido del lugar, si tenía
         m.remove(); ids = ids.filter(i => i !== id);
-        cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}`;
+        if (m.dataset.b) bytes -= +m.dataset.b;
+        sons.delete(id);
+        pintarCuenta();
       } catch (err) { m.style.opacity = 1; showHint('no se pudo borrar'); }
     });
     m.append(x); fotos.append(m);
   }
   // miniaturas de a una, achicadas (las fotos enteras en memoria a la vez pueden tumbar el iPhone)
   for (const m of [...fotos.children]) {
-    if (salasViendo !== e || salasPanel.style.display === 'none') return;
+    if (!vigente() || salasPanel.style.display === 'none') return;
     const id = ids[[...fotos.children].indexOf(m)];
     if (!id) continue;
     try {
-      const src = await (await fetch(salaUrlDe(e.h, 'imgs/' + id))).json();
+      let src;
+      try { src = await (await fetch(salaUrlDe(e.h, 'imgs/' + id))).json(); } catch (err) { faltan++; continue; }
+      if (!vigente()) return;
       if (typeof src !== 'string') continue;
+      if (m.isConnected) { bytes += src.length; m.dataset.b = src.length; }
+      medidas++; pintarCuenta();
+      if (!salasMedidas.has(e.h + '/' + id)) { salasMedidas.add(e.h + '/' + id); salaPesoMedido(src.length); }
       const img = new Image(); img.src = src; await img.decode();
       const c = document.createElement('canvas'), k = 168 / Math.min(img.width, img.height);
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
@@ -1213,6 +1299,7 @@ async function salasDetalle(e) {
       const t = new Image(); t.src = c.toDataURL('image/jpeg', 0.7); m.prepend(t);
     } catch (err) {}
   }
+  midiendo = false; pintarCuenta();
 }
 document.getElementById('salasEntrar').addEventListener('click', () => salasViendo && salasEntrarA(salasViendo));
 document.getElementById('salasVolver').addEventListener('click', () => { salasViendo = null; salasLista(); });
