@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.13';
+const VERSION = 'v10.14';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -119,14 +119,21 @@ function program(vs, fs) {
 }
 
 const quadProg = program(`
-attribute vec3 p; attribute vec2 uv; uniform mat4 m; varying vec2 v;
-void main() { v = uv; gl_Position = m * vec4(p, 1.0); }`, `
+attribute vec3 p; attribute vec2 uv; uniform mat4 m; uniform vec3 eye; varying vec2 v; varying vec3 rel;
+void main() { v = uv; rel = (p - eye) / 16.0; gl_Position = m * vec4(p, 1.0); }`, `
 precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; uniform vec2 fade; varying vec2 v;
-void main() { vec4 c = texture2D(t, v); if (c.a < 0.5) discard; gl_FragColor = vec4(c.rgb * tint, alpha * mix(fade.x, fade.y, v.y)); }`);
+uniform vec3 niebla; uniform vec3 nieblaD; varying vec3 rel;
+void main() {
+  vec4 c = texture2D(t, v); if (c.a < 0.5) discard;
+  float f = smoothstep(nieblaD.x, nieblaD.y, length(rel) * 16.0) * nieblaD.z;
+  gl_FragColor = vec4(mix(c.rgb * tint, niebla, f), alpha * mix(fade.x, fade.y, v.y));
+}`);
 const Q = {
   p: gl.getAttribLocation(quadProg, 'p'), uv: gl.getAttribLocation(quadProg, 'uv'),
   m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'), alpha: gl.getUniformLocation(quadProg, 'alpha'), fade: gl.getUniformLocation(quadProg, 'fade'),
+  eye: gl.getUniformLocation(quadProg, 'eye'), niebla: gl.getUniformLocation(quadProg, 'niebla'), nieblaD: gl.getUniformLocation(quadProg, 'nieblaD'),
 };
+// (rel va dividido por 16: en el iPhone mediump es de 16 bits y el cuadrado de una distancia de 300 m no entraría)
 
 const dotProg = program(`
 attribute vec3 p; uniform mat4 m; uniform vec3 eye; varying float a;
@@ -146,6 +153,20 @@ const GRID = 12;
 const dotBuf = gl.createBuffer();
 const dotData = new Float32Array((GRID * 2 + 1) ** 2 * 3);
 
+// color promedio de cada textura (para la atmósfera, v10.14): 8x8 px alcanza
+const texCol = new WeakMap();
+const colC = document.createElement('canvas'); colC.width = colC.height = 8;
+const colX = colC.getContext('2d', { willReadFrequently: true });
+colX.imageSmoothingQuality = 'high';   // de 512 a 8 px de un saque: sin esto promedia pocos pixeles y salta con fotos con detalle
+function colorMedio(src) {
+  try {
+    colX.clearRect(0, 0, 8, 8); colX.drawImage(src, 0, 0, 8, 8);
+    const d = colX.getImageData(0, 0, 8, 8).data, s = [0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) { s[0] += d[i]; s[1] += d[i + 1]; s[2] += d[i + 2]; }
+    const c = s.map(x => x / 64 / 255);
+    return c.every(Number.isFinite) ? c : null;
+  } catch (e) { return null; }
+}
 function texture(src) {
   const t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
@@ -153,7 +174,7 @@ function texture(src) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  if (src) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src);
+  if (src) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src); const c = colorMedio(src); if (c) texCol.set(t, c); }
   else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
   return t;
 }
@@ -1573,14 +1594,15 @@ function pantallaOk(now) {
   const pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]], vals = [];
   for (const [x, y] of pts) { gl.readPixels(Math.floor(canvas.width * x), Math.floor(canvas.height * y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pantallaPx); vals.push(pantallaPx.join(',')); }
   const lum = pantallaPx[0] + pantallaPx[1] + pantallaPx[2];
-  if (vals.every(v => v === vals[0]) && lum > 90) diagUna(`pantalla pareja rgb(${vals[0]}) · ${estadoTxt()}`);
+  if (vals.every(v => v === vals[0]) && lum > 57 + (atm[0] + atm[1] + atm[2]) * 255) diagUna(`pantalla pareja rgb(${vals[0]}) · ${estadoTxt()}`);
   // ¿se ven los puntos del piso? (mirando más o menos al frente siempre tienen que verse en la mitad de abajo)
   if (started && !pjVista && basis().f[1] < 0.2) {
     const w = canvas.width, h = canvas.height, fila = new Uint8Array(w * 4);
     let claros = 0;
     for (let y = Math.floor(h * 0.05); y < h * 0.45 && !claros; y += Math.max(3, Math.floor(h / 120))) {
       gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, fila);
-      for (let i = 0; i < fila.length; i += 4) if (fila[i] > 45 || fila[i + 1] > 45 || fila[i + 2] > 45) { claros++; break; }
+      const [fr, fg, fb] = atm.map(x => x * 255 + 35);   // más claro que el fondo (que con la atmósfera no es negro)
+      for (let i = 0; i < fila.length; i += 4) if (fila[i] > fr || fila[i + 1] > fg || fila[i + 2] > fb) { claros++; break; }
     }
     if (!claros) diagUna('no se ve el piso · ' + estadoTxt());
   }
@@ -1659,8 +1681,43 @@ function tapaAlPersonaje(w, yo, b) {
   }
   return false;
 }
+// atmósfera (v10.14, propuesta 3 de José, parte 1): el fondo y una niebla suave toman el color de las fotos de alrededor
+// (su promedio, pesado por tamaño y cercanía, con un poco más de color), así cada rincón tiene su clima y cambia al construir.
+// Siempre oscuro (ningún canal pasa de ATM_MAX: las fotos tienen que resaltar). Las lejanas se funden en ese color.
+const ATM_BASE = [0.04, 0.04, 0.05], ATM_MAX = 0.15, ATM_R = 6;
+const NIEBLA = [12, 50, 0.85];   // empieza a 12 m, llega a 50 m, y como mucho tapa el 85%
+const atm = ATM_BASE.slice();
+let atmPrimera = true;
+function atmosferaMeta(eye) {
+  const s = [0, 0, 0];
+  let sw = 0;
+  for (const w of works) {
+    if (w.rota || w.vacio) continue;
+    const col = texCol.get(w.tex);
+    if (!col) continue;
+    const d = Math.hypot(w.c[0] - eye[0], w.c[1] - eye[1], w.c[2] - eye[2]);
+    const k = Math.min(w.w * w.h, 25) / (1 + (d / ATM_R) ** 2);
+    if (!(k > 0)) continue;
+    s[0] += col[0] * k; s[1] += col[1] * k; s[2] += col[2] * k; sw += k;
+  }
+  if (!(sw > 0)) return ATM_BASE;
+  const m = s.map(x => x / sw), y = 0.3 * m[0] + 0.59 * m[1] + 0.11 * m[2];
+  const c = m.map(x => clamp(y + (x - y) * 1.8, 0, 1));          // un poco más de color: el promedio tira a gris
+  const cob = sw / (sw + 2);                                       // una foto chica y lejos casi no tiñe
+  const extra = c.map(x => x * 0.2 * cob);
+  const tope = Math.max(...ATM_BASE.map((b, i) => b + extra[i]));
+  const k = tope > ATM_MAX ? (ATM_MAX - Math.max(...ATM_BASE)) / Math.max(1e-6, tope - Math.max(...ATM_BASE)) : 1;
+  return ATM_BASE.map((b, i) => Math.min(ATM_MAX, b + extra[i] * k));
+}
+function atmosfera(dt) {
+  const meta = atmosferaMeta(pos);
+  const a = atmPrimera ? 1 : 1 - Math.exp(-dt / 1.5);              // cambia de a poco (caminando, "ir ahí", fotos que llegan)
+  atmPrimera = false;
+  for (let i = 0; i < 3; i++) { atm[i] += (meta[i] - atm[i]) * a; if (!Number.isFinite(atm[i])) atm[i] = ATM_BASE[i]; }
+}
 function escena(b, dt, yo) {
-  gl.clearColor(0.04, 0.04, 0.05, 1);
+  atmosfera(dt);
+  gl.clearColor(atm[0], atm[1], atm[2], 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   const m = matrix(b);
 
@@ -1668,6 +1725,7 @@ function escena(b, dt, yo) {
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
   gl.useProgram(quadProg);
   gl.uniformMatrix4fv(Q.m, false, m);
+  gl.uniform3fv(Q.eye, pos); gl.uniform3fv(Q.niebla, atm); gl.uniform3fv(Q.nieblaD, NIEBLA);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
   for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
@@ -1762,6 +1820,6 @@ window.__game = {
   pos, works, joy,
   get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get previewBloque() { return previewBloque; }, get bloqueOn() { return bloqueOn; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
-  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, snapPose, stableGrilla,
+  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, atm, texCol, snapPose, stableGrilla,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };

@@ -16,7 +16,7 @@ const ok = (n, c) => { if (!c) fallas++; console.log((c ? 'OK   ' : 'FAIL ') + n
     await pg.goto(URL); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady, null, { timeout: 8000 }); return pg; };
   const piso = pg => pg.evaluate(() => new Promise(res => requestAnimationFrame(() => {
     const w = canvas.width, h = canvas.height, px = new Uint8Array(w * 4); let n = 0;
-    for (let y = Math.floor(h * 0.1); y < h * 0.45; y += 6) { gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); for (let i = 0; i < px.length; i += 4) if (px[i] > 40) n++; }
+    for (let y = Math.floor(h * 0.1); y < h * 0.45; y += 6) { gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); for (let i = 0; i < px.length; i += 4) if (px[i] > __game.atm[0] * 255 + 30) n++; }
     res(n); })));
   const errHint = async pg => /error/i.test(await pg.textContent('#hint'));
   const A = await mk();

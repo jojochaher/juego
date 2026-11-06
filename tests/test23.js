@@ -22,7 +22,7 @@ const root = process.argv[2], out = require('path').join(__dirname, 'out') + '/'
     // ¿hay puntos del piso? (algún píxel más claro que el fondo en la mitad de abajo)
     const hayPiso = await pg.evaluate(() => new Promise(res => requestAnimationFrame(() => {
       const w = canvas.width, h = canvas.height, px = new Uint8Array(w * 4);
-      let claros = 0; for (let y = Math.floor(h * 0.6); y < h * 0.95; y += 7) { gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); for (let i = 0; i < px.length; i += 4) if (px[i] > 40) claros++; }
+      let claros = 0; for (let y = Math.floor(h * 0.6); y < h * 0.95; y += 7) { gl.readPixels(0, y, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); for (let i = 0; i < px.length; i += 4) if (px[i] > __game.atm[0] * 255 + 30) claros++; }
       res(claros);
     })));
     await pg.waitForTimeout(6500);
