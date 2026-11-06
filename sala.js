@@ -55,6 +55,7 @@ function salaClave() {
 
 async function salaEntrar(hash) {
   if (sala.active) { salaChau(); salaCerrarConexiones(); }
+  salaDejarDeSeguir('saliste');
   if (held) releaseHold();
   clearWorks();
   sala.active = true; sala.hash = hash;
@@ -79,6 +80,7 @@ function salaSalir() {
   salaChau();
   salaCerrarConexiones();
   if (held) releaseHold();
+  salaDejarDeSeguir('saliste');
   sala.active = false; sala.hash = null; sala.gente.clear();
   try { localStorage.removeItem('sala'); localStorage.removeItem('salaPass'); } catch (e) {}
   clearWorks();
@@ -325,6 +327,7 @@ function salaEnviarPresencia() {
   // lo que tengo en la mano (una foto agarrada, la vista previa de la cámara o el bloque vacío), para que los demás lo vean
   const L = held ? heldPose(basis()) : ((camOn && camReady) || bloqueOn ? previewPose(basis()) : null);
   if (!held && bloqueOn) est.bq = 1;
+  if (salaSig) est.sg = salaSig.id;   // a quién sigo (v10.10): si me sigue a mí, no copiamos los giros en ronda
   if (L) {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
@@ -371,6 +374,7 @@ function salaPersona(id, d) {
   p.col = d.col || [0.8, 0.8, 0.8];
   p.cam = !!d.cam;
   p.bq = !!d.bq;               // tiene el bloque vacío equipado (v10.6)
+  p.sg = typeof d.sg === 'string' ? d.sg : null;   // a quién sigue (v10.10)
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
@@ -485,7 +489,8 @@ function salaManoDe(id, p, k) {
 // ---------- encontrarse (v10.9, propuesta 13 de José, parte 1) ----------
 // cada uno que no se ve en la pantalla aparece como una carita en el borde (su cara en vivo, o su color),
 // del lado para donde está, con la distancia. Tocarla ofrece "ir": aparecés al lado suyo, mirándolo.
-const salaLejosEl = document.getElementById('lejos'), salaIrEl = document.getElementById('lejosIr');
+const salaLejosEl = document.getElementById('lejos'), salaIrEl = document.getElementById('lejosOps');
+const salaSeguirBtn = document.getElementById('lejosSeguir');
 const salaCaritas = new Map();      // id -> { el, cv, x, fl, m, sx, sy }
 let salaElegido = null, salaElegidoHasta = 0;
 function salaCarita(id) {
@@ -504,15 +509,24 @@ function salaCarita(id) {
 function salaElegir(id) {
   salaElegido = id; salaElegidoHasta = Date.now() + 6000;
   salaIrEl.style.display = id ? '' : 'none';
+  if (id) { salaSeguirBtn.textContent = salaSig && salaSig.id === id ? 'dejar de seguir' : 'seguir'; salaIrEl.style.transform = 'translate(-999px,-999px)'; }
+  salaLejosEl.style.display = id || salaLejosEl.querySelector('.lejos:not([style*="none"])') ? '' : 'none';
 }
 salaIrEl.addEventListener('pointerdown', e => e.stopPropagation());
-salaIrEl.addEventListener('click', () => { const id = salaElegido; salaElegir(null); if (id) salaIr(id); });
+document.getElementById('lejosIr').addEventListener('click', () => { const id = salaElegido; salaElegir(null); if (id) salaIr(id); });
+salaSeguirBtn.addEventListener('click', () => {
+  const id = salaElegido; salaElegir(null);
+  if (!id) return;
+  if (salaSig && salaSig.id === id) salaDejarDeSeguir('lo pediste');
+  else salaSeguir(id);
+});
 document.addEventListener('pointerdown', e => {   // tocar en otro lado cierra la opción (y el toque sigue de largo)
   if (salaElegido && !salaIrEl.contains(e.target) && !salaLejosEl.contains(e.target)) salaElegir(null);
 }, true);
 function salaIr(id) {
   const p = sala.gente.get(id);
   if (!p || !sala.active) return;
+  salaDejarDeSeguir('fuiste');
   if (!irHacia(p.target.p, p.target.yaw)) return;
   diag('sala: fui con ' + id.slice(0, 4));
   buzz(10);
@@ -607,13 +621,117 @@ function salaLejos(b) {
     if (!sala.gente.has(id)) { c.el.remove(); salaCaritas.delete(id); }
     else if (c.visible) { c.el.style.display = 'none'; c.visible = false; }
   }
-  // la opción "ir", al lado de la carita elegida (hacia adentro de la pantalla)
-  if (salaElegido && (!vistos.has(salaElegido) || Date.now() > salaElegidoHasta)) salaElegir(null);
+  // las opciones "ir ahí / seguir": al lado de la carita elegida (hacia adentro de la pantalla),
+  // o debajo de su cabeza si se lo tocó en 3D y se ve (v10.10)
   if (salaElegido) {
-    const c = salaCaritas.get(salaElegido);
-    salaIrEl.style.transform = `translate(${(c.sx - c.dx * 66).toFixed(1)}px,${(c.sy - c.dy * 58).toFixed(1)}px) translate(-50%,-50%)`;
+    let xy = null;
+    const p = activo && sala.gente.get(salaElegido), q = p && p.disp && p.disp.p;
+    if (vistos.has(salaElegido)) { const c = salaCaritas.get(salaElegido); xy = [c.sx - c.dx * 80, c.sy - c.dy * 58]; }
+    else if (finito3(q)) {
+      const [tx, ty] = tans(), l = toLocalV(b, sub(q, pos));
+      if (l[2] > 0.05) xy = [clamp(W / 2 + l[0] / l[2] / tx * W / 2, 90, W - 90), clamp(H / 2 - l[1] / l[2] / ty * H / 2 + 56, 130, H - 210)];
+    }
+    if (!xy || Date.now() > salaElegidoHasta) salaElegir(null);
+    else salaIrEl.style.transform = `translate(${xy[0].toFixed(1)}px,${xy[1].toFixed(1)}px) translate(-50%,-50%)`;
   }
-  salaLejosEl.style.display = vistos.size ? '' : 'none';
+  salaLejosEl.style.display = vistos.size || salaElegido ? '' : 'none';
+}
+
+// ¿tocaste a alguien de la sala? (v10.10) El cuerpo es un palito de la cabeza a los pies con ~30 cm de radio.
+// Devuelve { id, t } (t = distancia por el rayo) del más cercano, o null.
+function salaPersonaEn(x, y) {
+  if (!sala.active || !sala.gente.size || pjVista) return null;
+  const d = rayoEn(x, y);
+  let mejor = null;
+  for (const [id, p] of sala.gente) {
+    const q = p.disp && p.disp.p;
+    if (!finito3(q) || len(sub(q, pos)) < 0.45) continue;      // pegado a vos no se dibuja
+    // punto del palito (vertical, de los pies a la cabeza) más cercano al rayo
+    const a = [q[0], Math.max(0, q[1] - EYE) + 0.1, q[2]], e = [0, q[1] + 0.2 - a[1], 0];
+    const w0 = sub(pos, a), A = dot(d, d), B = dot(d, e), C = dot(e, e), D = dot(d, w0), E = dot(e, w0);
+    const den = A * C - B * B;
+    let s = den > 1e-9 ? (B * E - C * D) / den : 0, u = den > 1e-9 ? (A * E - B * D) / den : 0;
+    u = clamp(u, 0, 1); s = Math.max(0, (B * u - D) / A);
+    const dist = len(sub(add(pos, mul(d, s)), add(a, mul(e, u))));
+    if (s > 0.1 && dist < 0.32 && (!mejor || s < mejor.t)) mejor = { id, t: s };
+  }
+  return mejor;
+}
+
+// ---------- seguir a alguien (v10.10, propuesta 13 parte 2) ----------
+// caminás solo detrás suyo (hasta quedar a 1,5 m) y la vista gira con la suya: lo que gira, girás vos
+// (con el giroscopio igual podés mirar alrededor). Se corta con el joystick, el teclado o arrastrando para mirar.
+// Si te trabás (una pared, una plataforma que no se sube) o se va lejos, aparecés detrás suyo.
+const salaSigEl = document.getElementById('siguiendo');
+let salaSig = null;
+salaSigEl.addEventListener('pointerdown', e => e.stopPropagation());
+salaSigEl.addEventListener('click', () => salaDejarDeSeguir('lo pediste'));
+const salaDirDe = (yaw, pitch) => [-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)];
+function salaSeguir(id) {
+  const p = sala.gente.get(id);
+  if (!p || !sala.active || !finito3(p.disp.p) || !Number.isFinite(p.disp.yaw) || !Number.isFinite(p.disp.pitch)) return;
+  salaSig = { id, yaw: p.disp.yaw, pitch: p.disp.pitch, trabado: 0, alto: 0, pared: 0, prev: pos.slice(), paso: 0, ultimoSalto: 0, fallidos: 0 };
+  if (held && held.aim) finishAim();
+  mirarDir(salaDirDe(p.disp.yaw, p.disp.pitch));   // mirar lo que mira
+  const col = Array.isArray(p.col) && p.col.length === 3 && p.col.every(Number.isFinite) ? p.col : [0.8, 0.8, 0.8];
+  salaSigEl.style.borderColor = salaRgb(col);
+  salaSigEl.style.display = '';
+  diag('sala: sigo a ' + id.slice(0, 4));
+  buzz(10);
+  showHint(TACTIL ? 'siguiendo · tocá el joystick o arrastrá para dejar' : 'siguiendo · moverte o mirar con el mouse lo corta');
+}
+function salaDejarDeSeguir(por) {
+  if (!salaSig) return;
+  salaSig = null;
+  salaSigEl.style.display = 'none';
+  diag('sala: dejé de seguir (' + por + ')');
+  if (por !== 'fuiste' && por !== 'saliste' && por !== 'agarraste') showHint(por === 'se fue' ? 'se fue de la sala' : por === 'no llego' ? 'no llego hasta ahí: dejé de seguir' : 'dejaste de seguir');
+}
+// cada cuadro, desde draw(): gira la vista con la suya y devuelve el paso [x, z] de este cuadro (o null)
+function salaSeguirPaso(dt) {
+  if (!salaSig) return null;
+  const p = sala.gente.get(salaSig.id), q = p && p.disp && p.disp.p;
+  if (!sala.active || !p) { salaDejarDeSeguir(sala.active ? 'se fue' : 'saliste'); return null; }
+  if (pjVista || !finito3(q) || !Number.isFinite(p.disp.yaw) || !Number.isFinite(p.disp.pitch)) return null;
+  // lo que giró desde el cuadro anterior, lo girás vos; salvo que en la cadena de a quién sigue cada uno
+  // esté yo (A sigue a B y B a A): ahí cada giro rebotaría de uno a otro sin fin
+  let ronda = false;
+  for (let o = p, i = 0; o && o.sg && i < 8; o = sala.gente.get(o.sg), i++) if (o.sg === salaYo) { ronda = true; break; }
+  if (!ronda && !held) {
+    let gy = p.disp.yaw - salaSig.yaw; gy = Math.atan2(Math.sin(gy), Math.cos(gy));
+    yawOff += gy;
+    pitchOff = clamp(pitchOff + p.disp.pitch - salaSig.pitch, -1.4, 1.4);
+  }
+  salaSig.yaw = p.disp.yaw; salaSig.pitch = p.disp.pitch;
+  const dx = q[0] - pos[0], dz = q[2] - pos[2], d = Math.hypot(dx, dz), alto = Math.abs(q[1] - pos[1]);
+  // ¿trabado? quise caminar y casi no me moví (una pared) durante 2,5 s; o está a otra altura que no alcanzo
+  // (una plataforma); o se fue muy lejos de golpe
+  const movi = Math.hypot(pos[0] - salaSig.prev[0], pos[2] - salaSig.prev[2]);
+  if (salaSig.paso > 0.002 && movi < salaSig.paso * 0.3) salaSig.trabado += dt; else salaSig.trabado = 0;
+  if (alto > 0.6 && d < 3) salaSig.alto += dt; else salaSig.alto = 0;
+  // cerca pero con una pared en el medio (quedé del otro lado a 1,5 m): también cuenta como trabado
+  if (d < 4 && tapado(pos, q, solidas())) salaSig.pared += dt; else salaSig.pared = 0;
+  salaSig.paso = 0; salaSig.prev = pos.slice();
+  if (d > 15 || salaSig.trabado > 2.5 || salaSig.alto > 2.5 || salaSig.pared > 2.5) {
+    salaSig.trabado = 0; salaSig.alto = 0; salaSig.pared = 0;
+    // si no hay caso (aparezco y enseguida me vuelvo a trabar o caer, 3 veces seguidas), dejo de seguir
+    const ahora = Date.now();
+    salaSig.fallidos = ahora - salaSig.ultimoSalto < 4000 ? salaSig.fallidos + 1 : 0;
+    salaSig.ultimoSalto = ahora;
+    if (salaSig.fallidos >= 3) { salaDejarDeSeguir('no llego'); return null; }
+    if (irHacia(q, p.disp.yaw, true)) {
+      salaSig.prev = pos.slice();
+      mirarDir(salaDirDe(p.disp.yaw, p.disp.pitch));
+      diag('sala: siguiendo, aparecí detrás de ' + salaSig.id.slice(0, 4));
+      sala.ultimoEstado = ''; salaEnviarPresencia();
+    }
+    return null;
+  }
+  // caminar hacia él hasta quedar a 1,5 m (más rápido cuanto más lejos, hasta correr)
+  if (d <= 1.5) return null;
+  const v = Math.min(MOVE * 2.5, (d - 1.5) * 2);
+  salaSig.paso = v * dt;
+  return [dx / d * v * dt, dz / d * v * dt];
 }
 
 // ---------- mis salas: registro en este dispositivo + ver fotos + borrar ----------

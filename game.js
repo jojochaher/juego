@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.9';
+const VERSION = 'v10.10';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -514,15 +514,16 @@ function tapado(a, b, ws) {
 }
 // ir al lado de alguien (v10.9, propuesta 13: encontrarse): a 1,5 m, delante suyo si se puede, en un lugar
 // del mismo piso y sin una pared en el medio (así quedan en el mismo cuarto), y mirándolo.
-// q = sus ojos, yaw = para dónde mira. Devuelve false si los datos no sirven.
-function irHacia(q, yaw) {
+// q = sus ojos, yaw = para dónde mira. atras (v10.10, al seguir): primero detrás suyo. Devuelve false si los datos no sirven.
+function irHacia(q, yaw, atras) {
   if (!finito3(q) || !Number.isFinite(yaw)) return false;
   if (held && held.aim) finishAim();
   const ws = solidas(), piesQ = Math.max(0, q[1] - EYE);
   const ojos = piesQ + EYE;
   let dest = null;
+  const giro0 = atras ? Math.PI : 0;
   buscar: for (const d of [1.5, 0.9]) for (const a of [0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, Math.PI]) {
-    const dir = [-Math.sin(yaw + a), 0, -Math.cos(yaw + a)], lejos = d + CUERPO + 0.1;
+    const dir = [-Math.sin(yaw + giro0 + a), 0, -Math.cos(yaw + giro0 + a)], lejos = d + CUERPO + 0.1;
     const x = q[0] + dir[0] * d, z = q[2] + dir[2] * d;
     if (Math.abs(sueloEn(x, z, piesQ, ws) - piesQ) > 0.1) continue;          // otro piso (o el vacío, si está arriba)
     let libre = true;
@@ -532,18 +533,23 @@ function irHacia(q, yaw) {
     }
     if (libre) { dest = [x, z]; break buscar; }
   }
-  if (!dest) dest = [q[0] - Math.sin(yaw) * 0.6, q[2] - Math.cos(yaw) * 0.6];   // muy encerrado: pegado a él (la física acomoda)
+  if (!dest) dest = [q[0] - Math.sin(yaw + giro0) * 0.6, q[2] - Math.cos(yaw + giro0) * 0.6];   // muy encerrado: pegado a él (la física acomoda)
   pos[0] = dest[0]; pos[1] = ojos; pos[2] = dest[1]; velY = 0;
   fisica(0);
-  // mirarlo (con el giroscopio el ajuste no es exacto de una: unas vueltas)
+  mirarDir(sub(q, pos));   // mirarlo
+  return true;
+}
+// girar la vista para mirar en la dirección d (con el giroscopio el ajuste no es exacto de una: unas vueltas)
+function mirarDir(d) {
+  if (!finito3(d) || len(d) < 1e-6) return;
+  d = norm(d);
   for (let i = 0; i < 6; i++) {
-    const f = basis().f, d = norm(sub(q, pos));
+    const f = basis().f;
     let eh = heading(d) - heading(f); eh = Math.atan2(Math.sin(eh), Math.cos(eh));
     if (Math.hypot(d[0], d[2]) < 0.05) eh = 0;
     yawOff += eh;
     pitchOff = clamp(pitchOff + Math.asin(clamp(d[1], -1, 1)) - Math.asin(clamp(f[1], -1, 1)), -1.4, 1.4);
   }
-  return true;
 }
 
 // ---------- grilla: alinear lo que está en la mano ----------
@@ -858,11 +864,16 @@ function trash() {
   releaseHold();
 }
 
-function workAt(x, y) {
+// el rayo que sale de la cámara por el punto (x, y) de la pantalla
+function rayoEn(x, y) {
   const b = basis();
   const [tx, ty] = tans();
   const nx = (x / W) * 2 - 1, ny = 1 - (y / H) * 2;
-  const d = norm(add(b.f, add(mul(b.r, nx * tx), mul(b.u, ny * ty))));
+  return norm(add(b.f, add(mul(b.r, nx * tx), mul(b.u, ny * ty))));
+}
+function workAt(x, y) { const h = workHit(x, y); return h && h.w; }
+function workHit(x, y) {
+  const d = rayoEn(x, y);
   let best = null, bestT = Infinity;
   for (const w of works) {
     const n = cross(w.r, w.u);
@@ -873,7 +884,7 @@ function workAt(x, y) {
     const p = sub(add(pos, mul(d, t)), w.c);
     if (Math.abs(dot(p, w.r)) <= w.w / 2 && Math.abs(dot(p, w.u)) <= w.h / 2) { best = w; bestT = t; }
   }
-  return best;
+  return best && { w: best, t: bestT };
 }
 
 // ---------- guardado (solo en el celu) ----------
@@ -1181,6 +1192,7 @@ unequipBtn.addEventListener('click', () => setCam(false));
 
 // ---------- volver al inicio ----------
 homeBtn.addEventListener('click', () => {
+  salaDejarDeSeguir('inicio');
   pos[0] = 0; pos[1] = EYE; pos[2] = 0; velY = 0;
   pitchOff = 0; yawOff = 0;
   yawOff = -heading(basis().f);
@@ -1235,7 +1247,7 @@ function joyEnd(e) {
   joy.id = null; joy.x = joy.y = 0;
   knobEl.style.transform = '';
 }
-joyEl.addEventListener('pointerdown', e => { joy.id = e.pointerId; joyEl.setPointerCapture(e.pointerId); joyUpdate(e); });
+joyEl.addEventListener('pointerdown', e => { joy.id = e.pointerId; joyEl.setPointerCapture(e.pointerId); joyUpdate(e); salaDejarDeSeguir('joystick'); });
 joyEl.addEventListener('pointermove', e => { if (e.pointerId === joy.id) joyUpdate(e); });
 joyEl.addEventListener('pointerup', joyEnd);
 joyEl.addEventListener('pointercancel', joyEnd);
@@ -1448,7 +1460,8 @@ canvas.addEventListener('pointermove', e => {
   if (mode === 'girar') { spinBy(L, -dx * 0.008, -dy * 0.008); return; }
   // editor de personaje abierto: arrastrar gira la cámara alrededor tuyo
   if (pjVista) { pjVista.ang -= dx * 0.008; return; }
-  // mirar
+  // mirar (y si estabas siguiendo a alguien, lo dejás: v10.10)
+  salaDejarDeSeguir('arrastre');
   const kk = invertLook ? -LOOK : LOOK;
   yawOff += dx * kk;
   pitchOff = clamp(pitchOff + dy * kk, -1.4, 1.4);
@@ -1460,8 +1473,10 @@ function endTouch(e) {
   touches.delete(e.pointerId);
   if (touches.size < 2) gesture = null;
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
-    const w = workAt(e.clientX, e.clientY);
-    if (w) pick(w);
+    // tocar a alguien de la sala (más cerca que la foto que hay detrás) abre "ir ahí / seguir" (v10.10)
+    const h = workHit(e.clientX, e.clientY), q = touches.size === 0 ? salaPersonaEn(e.clientX, e.clientY) : null;
+    if (q && (!h || q.t < h.t)) salaElegir(q.id);
+    else if (h) { salaDejarDeSeguir('agarraste'); pick(h.w); }
   } else if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && !pjVista && mode === 'mover'
              && touches.size === 0 && e.button === 0 && enLoQueTenes(e.clientX, e.clientY)) {
     abrirArchivoHasta = performance.now() + 800;   // se abre con el click que sigue (Safari solo abre un input de archivo desde un click)
@@ -1570,6 +1585,8 @@ function draw(now) {
   if (!joy.x && !joy.y && !kx && !ky) { corriendoT = 0; corriendo = 0; }
   const mx = clamp(joy.x + kx, -2, 2), my = clamp(joy.y + ky, -2, 2);   // teclado con shift llega a 1.8
   let paso = [0, 0];
+  if (mx || my) salaDejarDeSeguir('joystick');   // moverte corta el seguir (también con el teclado)
+  else { const s = salaSeguirPaso(dt); if (s) paso = s; }   // siguiendo a alguien (v10.10): camina solo
   if (mx || my) {
     let fw = [b.f[0], 0, b.f[2]];
     if (len(fw) < 0.2) fw = [b.u[0], 0, b.u[2]];

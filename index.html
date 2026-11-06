@@ -224,7 +224,10 @@
   .lejos .fl { position: absolute; left: 24px; top: -6px; width: 0; height: 0; border-left: 8px solid #ccc; border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
   .lejos .m { position: absolute; left: 50%; top: 46px; transform: translateX(-50%); font-size: 11px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 3px #000; white-space: nowrap; pointer-events: none; }
   #seguro { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-  #lejosIr { position: absolute; left: 0; top: 0; pointer-events: auto; background: rgba(255,255,255,0.92); color: #111; font-size: 14px; padding: 8px 16px; cursor: pointer; }
+  #lejosOps { position: absolute; left: 0; top: 0; display: flex; gap: 6px; pointer-events: auto; }
+  #lejosOps .pill { background: rgba(255,255,255,0.92); color: #111; font-size: 14px; padding: 8px 14px; cursor: pointer; }
+  #siguiendo { position: fixed; left: 50%; top: calc(56px + env(safe-area-inset-top)); transform: translateX(-50%); z-index: 3; cursor: pointer;
+    background: rgba(0,0,0,0.45); color: #fff; border: 2px solid #ccc; font-size: 13px; padding: 6px 14px; }
   #cancel {
     right: 112px; bottom: calc(58px + env(safe-area-inset-bottom));
     width: 48px; height: 48px; background: rgba(255,255,255,0.18); color: #fff; font-size: 20px;
@@ -288,7 +291,8 @@
 <video id="yoCara" playsinline muted autoplay style="display:none"></video>
 <div id="yoCaraOff" style="display:none" aria-label="prender tu cara"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><circle cx="8.8" cy="10" r="0.9" fill="currentColor" stroke="none"/><circle cx="15.2" cy="10" r="0.9" fill="currentColor" stroke="none"/><path d="M8 14.3c1 1.6 2.4 2.4 4 2.4s3-.8 4-2.4"/></svg></div>
 <div id="seguro"></div>
-<div id="lejos" style="display:none"><div id="lejosIr" class="pill" style="display:none">ir ahí</div></div>
+<div id="lejos" style="display:none"><div id="lejosOps" style="display:none"><div id="lejosIr" class="pill">ir ahí</div><div id="lejosSeguir" class="pill">seguir</div></div></div>
+<div id="siguiendo" class="pill" style="display:none">siguiendo&nbsp;&nbsp;✕</div>
 <div id="cancel" class="ctl btn" style="display:none" aria-label="cancelar">✕</div>
 <div id="start"><b>tocá para entrar</b><span>te va a pedir permiso para el movimiento y la cámara</span></div>
 <div id="ver"></div>
