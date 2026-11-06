@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.18';
+const VERSION = 'v10.19';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -242,7 +242,7 @@ function quadData(c, r, u, w, h, uv = FULL) {
 const scratch = gl.createBuffer();
 // fade = [a, b]: el alfa va de a (borde de arriba del cuadro, +u) a b (abajo, -u); para que las guías se desvanezcan en las puntas
 const SIN_FADE = [1, 1];
-function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE) {
+function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0) {
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   if (data) gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(Q.p); gl.vertexAttribPointer(Q.p, 3, gl.FLOAT, false, 20, 0);
@@ -251,7 +251,46 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE) {
   gl.uniform3fv(Q.tint, tint);
   gl.uniform1f(Q.alpha, alpha);
   gl.uniform2fv(Q.fade, fade);
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  gl.drawArrays(gl.TRIANGLES, first, 6);
+}
+// una obra puesta: una foto (un cuadro) o una caja (6 caras en su buffer, cada una con su sombra)
+function drawObra(w, alpha = 1) {
+  if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);
+  drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);        // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
+  for (let i = 1; i < w.caras.length; i++) { const k = w.caras[i].k; gl.uniform3f(Q.tint, k, k, k); gl.drawArrays(gl.TRIANGLES, i * 6, 6); }
+}
+
+// ---------- extruir (v10.19, propuesta 7 de José, parte 1): fotos que se vuelven cajas ----------
+// d = profundidad (metros). La foto es la cara de adelante y la caja crece para atrás (n = -cross(r, u): cross(r, u) mira
+// hacia el que ve la foto derecha, o sea para donde mira la cámara al sacarla, al revés). Las otras caras llevan la misma
+// imagen con la misma escala que la de adelante (si la cara es más chica, un pedazo del centro; en un cubo, la foto entera
+// en cada cara). Cada cara: c, r, u, w, h, uv, k (sombra: los costados más oscuros, arriba más claro), con cross(r, u) para
+// afuera de la caja (así se lee derecha, no espejada, desde afuera).
+const D_MAX = 40;
+const dValida = d => Number.isFinite(d) && d > 1e-4 ? Math.min(d, D_MAX) : undefined;
+function cajaCaras(p) {
+  const d = dValida(p.d);
+  if (!d) return null;
+  const n = mul(norm(cross(p.r, p.u)), -1), r = p.r, u = p.u, C = add(p.c, mul(n, d / 2)), uv = p.uv || FULL;
+  const aw = uv[2] - uv[0], ah = uv[3] - uv[1], su = aw / p.w, sv = ah / p.h;
+  const recorte = (w, h) => {
+    let a = w * su, b = h * sv;
+    const k = Math.min(1, aw / a, ah / b); a *= k; b *= k;
+    const cu = (uv[0] + uv[2]) / 2, cv = (uv[1] + uv[3]) / 2;
+    return [cu - a / 2, cv - b / 2, cu + a / 2, cv + b / 2];
+  };
+  const neg = v => mul(v, -1);
+  const cara = (c, rr, uu, w, h) => {
+    const fuera = norm(cross(rr, uu));
+    return { c, r: rr, u: uu, w, h, uv: recorte(w, h), k: clamp(0.72 + 0.25 * fuera[1], 0.5, 1) };
+  };
+  const atras = cara(add(p.c, mul(n, d)), neg(r), u, p.w, p.h); atras.k = Math.max(atras.k, 0.9);
+  return [
+    { c: p.c, r, u, w: p.w, h: p.h, uv: uv.slice(), k: 1 },             // adelante: la foto
+    atras,                                                              // atrás: la misma, derecha desde atrás
+    cara(add(C, mul(r, p.w / 2)), n, u, d, p.h), cara(sub(C, mul(r, p.w / 2)), neg(n), u, d, p.h),   // costados
+    cara(add(C, mul(u, p.h / 2)), r, n, p.w, d), cara(sub(C, mul(u, p.h / 2)), r, neg(n), p.w, d),   // arriba y abajo
+  ];
 }
 
 // el fov va sobre el lado más corto de la pantalla (celu vertical: el ancho; compu apaisada: el alto)
@@ -271,6 +310,8 @@ function drawFramed(p, tex, color, deco = null) {
   const atras = add(p.c, mul(n, 0.004 * d));
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
+  const caras = cajaCaras(p);                            // una caja (extruida): las otras 5 caras
+  if (caras) for (let i = 1; i < caras.length; i++) { const f = caras[i]; drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k]); }
   if (deco) {
     // sin prueba de profundidad: el borde oscuro y el centro blanco de los cuadraditos están en el mismo plano y,
     // con la precisión de profundidad del iPhone, titilaban (z-fighting). Se pintan en orden, encima de la foto.
@@ -291,6 +332,7 @@ function agarraderas(p, n, d, m, deco) {
     if (alfa < 1) gl.disable(gl.BLEND);
   };
   const B = [1, 1, 1], Y = COLOR_RECORTE;
+  if (deco.modo === 'extruir') { aristasCaja(p, Y); return; }
   const cl = k => act[k] ? Y : B;
   // el lado activo: su línea del marco, en amarillo (justo encima del marco, mismo grosor)
   const lineaActiva = () => {
@@ -331,6 +373,27 @@ function agarraderas(p, n, d, m, deco) {
   lineaActiva();                                         // al final: el lado que se mueve se ve entero, sin cortes
 }
 
+// extruir: las aristas de la caja en amarillo, también las de atrás (se ven a través de la foto): de frente la caja
+// tapa su propia profundidad y, sin esto, al arrastrar no se vería que crece
+function aristasCaja(p, col) {
+  const caras = cajaCaras(p);
+  if (!caras) return;
+  const n = mul(norm(cross(p.r, p.u)), -1), q = (sx, sy, sz) => add(p.c, add(add(mul(p.r, sx * p.w / 2), mul(p.u, sy * p.h / 2)), mul(n, sz * p.d)));
+  const linea = (a, b) => {
+    const dir = sub(b, a), largo = len(dir);
+    if (largo < 1e-4) return;
+    const mid = add(a, mul(dir, 0.5)), t = mul(dir, 1 / largo);
+    let lado = cross(t, sub(mid, pos));
+    if (len(lado) < 1e-6) return;
+    drawQuad(scratch, quadData(mid, norm(lado), t, metersPerPx(Math.max(0.2, len(sub(mid, pos)))) * 2.5, largo), white, col, 0.9);
+  };
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) linea(q(sx, sy, 0), q(sx, sy, 1));   // de adelante para atrás
+  const vuelta = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]];
+  for (let i = 0; i < 4; i++) linea(q(...vuelta[i], 1), q(...vuelta[i + 1], 1));                    // la cara de atrás
+  gl.disable(gl.BLEND);
+}
+
 function matrix(b) {
   const { f, r, u } = b;
   const [tx, ty] = tans();
@@ -348,9 +411,22 @@ function matrix(b) {
 // ---------- obras ----------
 const works = []; // {id, c, r, u, w, h, uv, aspect, tex, buf}
 
+// con la pose nueva: el buffer para dibujarla y, si es una caja, sus caras (para dibujar, chocar y agarrar).
+// Cada cara sabe de qué obra es (obra) y hasta dónde llega la caja arriba (top: una caja baja se sube como un escalón).
 function setBuf(w) {
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
-  gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.uv), gl.STATIC_DRAW);
+  w.d = dValida(w.d);
+  const caras = w.d && !w.rota ? cajaCaras(w) : null;   // una rota no choca ni es caja (pero no pierde su profundidad)
+  if (caras) {
+    const top = Math.max(...caras.map(f => f.c[1] + (Math.abs(f.r[1]) * f.w + Math.abs(f.u[1]) * f.h) / 2));
+    // se sube como un escalón solo si arriba tiene una cara de piso (inclinada sobre una arista no: se atravesaría)
+    const escalon = caras.some(f => Math.abs(normal(f)[1]) > 0.7 && f.c[1] > top - 0.01);
+    for (const f of caras) { f.obra = w; f.top = escalon ? top : undefined; }
+    const data = new Float32Array(caras.length * 30);
+    caras.forEach((f, i) => data.set(quadData(f.c, f.r, f.u, f.w, f.h, f.uv), i * 30));
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  } else gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.uv), gl.STATIC_DRAW);
+  w.caras = caras;
 }
 // una foto con números rotos (NaN, ejes en cero) no puede tocar la física: si no, te deja en NaN y no se ve nada
 const finito3 = v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
@@ -371,6 +447,7 @@ function addWork(o, img) {
   if (Number.isFinite(o.t0)) w.t0 = o.t0;
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
+  w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
   setBuf(w);
   works.push(w);
   return w;
@@ -407,6 +484,7 @@ function ponerBloque() {
   if (!started || held || !bloqueOn) return;
   const p = previewPose(basis());
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: p.c, r: p.r, u: p.u, w: p.w, h: p.h, uv: FULL.slice(), vacio: true, t0: Date.now() };
+  if (p.d) o.d = p.d;                                    // el bloque equipado extruido: pone cajas (v10.19)
   if (sala.active) o.de = salaDe();
   addWork(o, VACIO_IMG);
   if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
@@ -506,7 +584,7 @@ const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : en
 const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur().c);
 
 function worldPose(b, L) {
-  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice() };
+  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice(), d: dValida(L.d) };
 }
 
 // ---------- colisiones: las fotos son paredes y pisos ----------
@@ -514,9 +592,14 @@ function worldPose(b, L) {
 // el resto = pared: no se atraviesa. Lo que tenés en la mano (o tiene otro) no choca.
 const CUERPO = 0.22, ESCALON = 0.4, GRAVEDAD = 9.8;
 let velY = 0;
+// una caja (extruida, v10.19) choca con sus 6 caras: cada una es una foto más, con obra = la caja y top = su altura
 function solidas() {
-  const otros = salaEnManos();
-  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id) && !w.rota && w !== cieloW);   // la del cielo no está en su lugar
+  const otros = salaEnManos(), r = [];
+  for (const w of works) {
+    if ((held && w === held.work) || otros.has(w.id) || w.rota || w === cieloW) continue;   // la del cielo no está en su lugar
+    if (w.caras) r.push(...w.caras); else r.push(w);
+  }
+  return r;
 }
 const normal = w => norm(cross(w.r, w.u));
 let posBuena = [0, EYE, 0];
@@ -532,6 +615,7 @@ function fisica(dt) {
     for (const w of ws) {
       const n = normal(w);
       if (Math.abs(n[1]) > 0.7) continue;
+      if (w.top !== undefined && w.top <= pies + ESCALON) continue;   // costado de una caja baja: se sube como un escalón
       for (let hy = ESCALON + 0.05; hy <= EYE + 0.01; hy += 0.2) {
         const q = [pos[0], pies + hy, pos[2]];
         const d = sub(q, w.c);
@@ -543,7 +627,7 @@ function fisica(dt) {
         if (len(e) < 1e-4) { e = [n[0], 0, n[2]]; if (dot(e, d) < 0) e = mul(e, -1); }
         e = norm(e);
         const px = pos[0] + e[0] * (CUERPO - dist), pz = pos[2] + e[2] * (CUERPO - dist);
-        if (!Number.isFinite(px) || !Number.isFinite(pz)) { w.rota = true; diag(`foto ${String(w.id).slice(-6)} rompía la física → no choca`); continue; }
+        if (!Number.isFinite(px) || !Number.isFinite(pz)) { const ob = w.obra || w; ob.rota = true; diag(`foto ${String(ob.id).slice(-6)} rompía la física → no choca`); continue; }
         pos[0] = px; pos[2] = pz;
       }
     }
@@ -657,7 +741,8 @@ function snapPose(p, P = pasoGrilla) {
   const w = p.w * k, h = p.h * k;
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
   const corner = c0.map(v => snapP(v, P));
-  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice() };
+  const d = p.d > 0 ? dValida(snapP(p.d, P)) : undefined;   // la profundidad de una caja, de a un paso (o nada)
+  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d };
 }
 // guías: la grilla en 3D (de a pasoGrilla) alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R de la foto
 // (alfa según la distancia a la foto: las líneas a GUIA_R o más ya no se ven, así que no se dibujan).
@@ -760,6 +845,21 @@ function spinBy(L, ax, ay) {
   L.r = norm(rotAxis(rotAxis(L.r, Y, ax), X, ay));
   L.u = norm(rotAxis(rotAxis(L.u, Y, ax), X, ay));
   L.r = norm(cross(L.u, cross(L.r, L.u)));   // re-ortogonalizar
+}
+// extruir (v10.19): sumarle (o sacarle) profundidad a lo que está en la mano; arriba dice cuánta queda (con la grilla, de a un paso)
+const largoTxt = m => m < 0.995 ? Math.round(m * 100) + ' cm' : (Math.round(m * 10) / 10).toString().replace('.', ',') + ' m';
+let extruirTxt = '';
+function extruirBy(L, dd) {
+  const d0 = L.d || 0, d = clamp(d0 + dd, 0, D_MAX);
+  L.d = d > 0.005 ? d : undefined;
+  // agarrada desde atrás, la caja crecería hacia vos (y te encerraría): queda quieta la cara de tu lado y se aleja la otra
+  // para donde crece, en coordenadas de la cámara (vos en el origen). Ojo: la base de la cámara (r, u, f) es de mano
+  // izquierda (cross(r, u) = -f), así que acá el producto cruz da al revés que en el mundo: sin el -1
+  const n = norm(cross(L.r, L.u));
+  if (dot(n, L.c) < 0) L.c = sub(L.c, mul(n, (L.d || 0) - d0));
+  const p = held ? heldPose(basis()) : previewPose(basis());
+  const t = p.d ? 'profundidad: ' + largoTxt(p.d) : 'sin profundidad: una foto';
+  if (t !== extruirTxt) { extruirTxt = t; showHint(t); }
 }
 // zoom del contenido: achica/agranda la ventana uv alrededor de su centro
 function zoomContent(L, uv0, k) {
@@ -866,7 +966,7 @@ function pick(w) {
 }
 function finishAim() {
   const w = held.work, b = basis();
-  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice() };
+  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice(), d: w.d };
   held.aim = null;
 }
 function stepAim(dt) {
@@ -910,7 +1010,7 @@ function drop() {
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
   setBuf(w);
-  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv };
+  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d };
   if (sala.active) {
     if (relleno && relleno.vaciar) salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
@@ -1041,13 +1141,15 @@ function workHit(x, y) {
   let best = null, bestT = Infinity;
   for (const w of works) {
     if (w === cieloW) continue;                         // está en el cielo: no se agarra (se baja desde ☰)
-    const n = cross(w.r, w.u);
-    const den = dot(d, n);
-    if (Math.abs(den) < 1e-6) continue;
-    const t = dot(sub(w.c, pos), n) / den;
-    if (t <= 0 || t >= bestT) continue;
-    const p = sub(add(pos, mul(d, t)), w.c);
-    if (Math.abs(dot(p, w.r)) <= w.w / 2 && Math.abs(dot(p, w.u)) <= w.h / 2) { best = w; bestT = t; }
+    for (const f of w.caras || [w]) {                   // una caja se agarra de cualquier cara
+      const n = cross(f.r, f.u);
+      const den = dot(d, n);
+      if (Math.abs(den) < 1e-6) continue;
+      const t = dot(sub(f.c, pos), n) / den;
+      if (t <= 0 || t >= bestT) continue;
+      const p = sub(add(pos, mul(d, t)), f.c);
+      if (Math.abs(dot(p, f.r)) <= f.w / 2 && Math.abs(dot(p, f.u)) <= f.h / 2) { best = w; bestT = t; }
+    }
   }
   return best && { w: best, t: bestT };
 }
@@ -1227,9 +1329,10 @@ const MODE_HINT = {
   recortar: 'borde o esquina: recortar · adentro: mover la imagen · dos dedos: zoom',
   escalar: 'borde: estirar a lo ancho o a lo alto · esquina: las dos cosas · dos dedos: tamaño',
   girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
+  extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño',
 };
 function setMode(m) {
-  mode = m;
+  mode = m; extruirTxt = '';
   for (const el of modesEl.querySelectorAll('[data-m]')) el.classList.toggle('on', el.dataset.m === m);
 }
 // modos de ajuste: tocar uno lo activa; tocar el activo vuelve a "mover" (el normal)
@@ -1482,7 +1585,7 @@ function tecladoMover() {
 }
 const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
   'C: cámara · B: bloque vacío · espacio: sacar foto o poner el bloque / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
-  '1: mover · 2: recortar · 3: escalar · 4: girar · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
+  '1: mover · 2: recortar · 3: escalar · 4: girar · 5: extruir · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
 const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
 window.addEventListener('keydown', e => {
@@ -1506,7 +1609,7 @@ window.addEventListener('keydown', e => {
   else if (c === 'KeyB' && !held) click(bloqueOn ? $('guardarBloque') : $('bloque'));
   else if (c === 'KeyG') { if (visible($('edicion'))) grillaBtn.click(); }
   else if (c === 'KeyH') showHint(ATAJOS);
-  else if (/^Digit[1-4]$/.test(c)) { const m = ['mover', 'recortar', 'escalar', 'girar'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
+  else if (/^Digit[1-5]$/.test(c)) { const m = ['mover', 'recortar', 'escalar', 'girar', 'extruir'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
   if (c.startsWith('Arrow')) e.preventDefault();
 });
 window.addEventListener('keyup', e => teclas.delete(e.code));
@@ -1607,6 +1710,7 @@ canvas.addEventListener('pointermove', e => {
     else { gesture.giro += da; if (Math.abs(gesture.giro) > 0.17) { gesture.girando = true; giro = gesture.giro - Math.sign(gesture.giro) * 0.17; } }
     if (mode === 'mover') { scaleBy(L, k); if (giro) rollBy(L, -giro); }
     else if (mode === 'girar') { if (giro) rollBy(L, -giro); }
+    else if (mode === 'extruir') { const w0 = L.w; scaleBy(L, k); if (L.d) L.d = Math.min(D_MAX, L.d * L.w / w0); }   // la caja entera
     else if (mode === 'recortar' && !vacioEnMano()) zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
     else if (mode === 'escalar' || mode === 'recortar') scaleBy(L, k);
     return;
@@ -1634,6 +1738,8 @@ canvas.addEventListener('pointermove', e => {
     panContent(L, -dot(v, L.r) / su, dot(v, L.u) / sv);
     return;
   }
+  // extruir: arrastrar para arriba le da profundidad (para atrás), para abajo se la saca
+  if (mode === 'extruir') { extruirBy(L, -dy * metersPerPx(len(L.c)) * 2); return; }
   // girar: como una bola, la cara de adelante sigue al dedo
   if (mode === 'girar') { spinBy(L, -dx * 0.008, -dy * 0.008); return; }
   // editor de personaje abierto: arrastrar gira la cámara alrededor tuyo
@@ -1815,7 +1921,8 @@ function draw(now) {
 
 const COLOR_PREVIA = [1, 0.47, 0.31];
 // las agarraderas de recortar / escalar (con el lado que se está moviendo)
-const deco = () => modoBordes() && !(held && held.aim) ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() } : null;
+const deco = () => held && held.aim ? null : modoBordes() ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() }
+  : mode === 'extruir' ? { modo: 'extruir' } : null;
 let vacioTexGL = null;
 const texVacio = () => vacioTexGL || (vacioTexGL = texture(VACIO_IMG));
 // en el editor de personaje, las fotos que quedan entre la cámara y el personaje no se dibujan (pedido de José: lo tapaban)
@@ -1823,6 +1930,10 @@ function tapaAlPersonaje(w, yo, b) {
   const pies = yo[1] - EYE;
   const puntos = [[0, yo[1] + 0.15], [0, pies + EYE * 0.6], [0, pies + 0.1], [-0.3, pies + EYE * 0.6], [0.3, pies + EYE * 0.6]]
     .map(([x, y]) => [yo[0] + b.r[0] * x, y, yo[2] + b.r[2] * x]);
+  for (const f of w.caras || [w]) if (tapaPuntos(f, puntos)) return true;   // una caja: cualquiera de sus caras
+  return false;
+}
+function tapaPuntos(w, puntos) {
   const n = cross(w.r, w.u);
   for (const q of puntos) {
     const d = sub(q, pos), den = dot(d, n);
@@ -1882,7 +1993,7 @@ function escena(b, dt, yo) {
   gl.uniformMatrix4fv(Q.m, false, m);
   gl.uniform3fv(Q.eye, pos); gl.uniform3fv(Q.niebla, atm); gl.uniform3fv(Q.nieblaD, NIEBLA);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
-  for (const w of works) if ((!held || w !== held.work) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  for (const w of works) if ((!held || w !== held.work) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawObra(w);
   salaDraw(b, dt);
   if (!yo) salaNuevasDibujar(b, dt);                     // lo nuevo desde tu última vez brilla (huellas, v10.12)
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
@@ -1915,7 +2026,7 @@ function escena(b, dt, yo) {
   if (held && !yo) {
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
-    drawQuad(held.work.buf, null, held.work.tex, [1, 1, 1], 0.35);
+    drawObra(held.work, 0.35);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
   }

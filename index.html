@@ -204,7 +204,7 @@
   #edicion .pill.on, #modes .pill.on { background: rgba(255,255,255,0.9); color: #111; }
   #modes {
     position: fixed; left: 0; right: 0; bottom: calc(216px + env(safe-area-inset-bottom));
-    display: flex; justify-content: center; gap: 6px; z-index: 3; pointer-events: none;
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; z-index: 3; pointer-events: none; padding: 0 8px;
   }
   #modes .pill { pointer-events: auto; }
   #menuBtn { font-size: 15px; padding: 6px 13px; }
@@ -262,6 +262,7 @@
   <div class="pill" data-m="recortar">recortar</div>
   <div class="pill" data-m="escalar">escalar</div>
   <div class="pill" data-m="girar">girar</div>
+  <div class="pill" data-m="extruir">extruir</div>
   <div class="pill" id="reset" aria-label="restablecer">↺ como era</div>
 </div>
 <div id="edicion" style="display:none">

@@ -51,7 +51,7 @@ const srv = http.createServer((q, r) => { const u = q.url.split('?')[0]; let p =
   ok(`recortar: esquina mueve dos bordes (uv ${pv2.uv.map(v=>v.toFixed(2))})`, pv2.uv[0] > 0.05 && pv2.uv[1] > 0.05);
   // mirar fuera del borde sigue mirando
   const y0 = await G(() => heading(basis().f));
-  await drag1(40, cy+200, 140, cy+200);
+  await drag1(40, cy-200, 140, cy-200);   // (abajo, a la altura de ajustar, desde v10.19 hay botones de punta a punta)
   ok('recortar: arrastrar lejos de la foto sigue mirando', Math.abs(await G(() => heading(basis().f)) - y0) > 0.2);
   await G(() => __game.look(0,0));
   // recortar adentro de la foto (lo que era encuadre): zoom y pan
