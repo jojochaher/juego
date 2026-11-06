@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.20';
+const VERSION = 'v10.21';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -272,11 +272,17 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0) {
 function drawObra(w, alpha = 1) {
   if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);
   drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);        // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
-  let lisas = false;
+  let lisas = false, fotos = false;
   for (let i = 1; i < w.caras.length; i++) {
     const f = w.caras[i];
     if (f.t === 'c') { lisas = true; continue; }
+    if (f.img) { fotos = true; continue; }
     gl.uniform3f(Q.tint, f.k, f.k, f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
+  }
+  if (fotos) for (let i = 1; i < w.caras.length; i++) {   // las que tienen su propia foto (v10.21)
+    const f = w.caras[i];
+    if (!f.img) continue;
+    gl.bindTexture(gl.TEXTURE_2D, f.img.tex); gl.uniform3f(Q.tint, f.k, f.k, f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
   }
   if (!lisas) return;
   gl.bindTexture(gl.TEXTURE_2D, white);                  // las de color liso (v10.20): blanco teñido con el color del borde
@@ -300,15 +306,32 @@ const dValida = d => Number.isFinite(d) && d > 1e-4 ? Math.min(d, D_MAX) : undef
 // izquierdo, arriba, abajo: m = la misma imagen (derecha desde afuera, como en v10.19), e = espejada (sigue desde el borde
 // de la foto como en un espejo: sin costura en la arista), b = el borde de la foto estirado (se "derrama" hacia atrás),
 // c = un color liso: el del borde de la foto de ese lado (atrás: el de toda la foto). Atrás no tiene borde: b no vale.
+// o = otra foto (v10.21, parte 3): una imagen propia de esa cara (ci[i] = {tex, a: alto/ancho, g}), recortada al centro
+// con la forma de la cara. Sin su imagen (todavía no cargó, o en la sala, que todavía no las lleva) se ve como m.
 // Sin cc (o 'mmmmm'): todas la misma.
 const CARA_NOMBRE = ['la foto', 'atrás', 'el costado derecho', 'el costado izquierdo', 'arriba', 'abajo'];
 const CARA_LADO = [null, null, 'r', 'l', 't', 'b'];   // de qué lado de la foto toca cada cara (para el borde y su color)
+// en el museo, cc se guarda sin 'o' (la letra que había debajo: m) y aparte co = qué caras tienen su foto (bit i-1): así
+// un v10.20 (si se vuelve atrás) ve la caja con la misma en esas caras y no pierde las otras letras al moverla
+const ccGuardar = cc => ccValida(cc) ? ccValida(cc.replace(/o/g, 'm')) : undefined;
+const coDe = cc => { let m = 0; if (ccValida(cc)) for (let i = 0; i < 5; i++) if (cc[i] === 'o') m |= 1 << i; return m || undefined; };
+function ccConFotos(cc, co) {
+  if (!Number.isInteger(co) || co <= 0 || co > 31) return ccValida(cc);
+  const a = (ccValida(cc) || 'mmmmm').split('');
+  for (let i = 0; i < 5; i++) if (co & (1 << i)) a[i] = 'o';
+  return ccValida(a.join(''));
+}
 function ccValida(s) {
-  if (typeof s !== 'string' || !/^[mebc]{5}$/.test(s)) return undefined;
+  if (typeof s !== 'string' || !/^[mebco]{5}$/.test(s)) return undefined;
   if (s[0] === 'b') s = 'm' + s.slice(1);
   return s === 'mmmmm' ? undefined : s;
 }
-function cajaCaras(p) {
+// el recorte centrado de una imagen de alto/ancho a que llena una cara de alto/ancho fa
+function uvLlena(a, fa) {
+  if (a > fa) { const k = fa / a; return [0, (1 - k) / 2, 1, (1 + k) / 2]; }
+  const k = a / fa; return [(1 - k) / 2, 0, (1 + k) / 2, 1];
+}
+function cajaCaras(p, ci = p.ci) {
   const d = dValida(p.d);
   if (!d) return null;
   const cc = ccValida(p.cc) || 'mmmmm';
@@ -330,8 +353,8 @@ function cajaCaras(p) {
     b: [null, null, [u1 - E, v0, u1 - E, v1], [u0 + E, v0, u0 + E, v1], [u0, v0 + E, u1, v0 + E], [u0, v1 - E, u1, v1 - E]],
   };
   const cara = (i, c, rr, uu, w, h) => {
-    const fuera = norm(cross(rr, uu)), t = cc[i - 1];
-    return { c, r: rr, u: uu, w, h, uv: (UV[t] && UV[t][i]) || recorte(w, h), k: clamp(0.72 + 0.25 * fuera[1], 0.5, 1), t };
+    const fuera = norm(cross(rr, uu)), img = cc[i - 1] === 'o' && ci && ci[i] || null, t = cc[i - 1] === 'o' && !img ? 'm' : cc[i - 1];
+    return { c, r: rr, u: uu, w, h, uv: img ? uvLlena(img.a, h / w) : (UV[t] && UV[t][i]) || recorte(w, h), k: clamp(0.72 + 0.25 * fuera[1], 0.5, 1), t, img };
   };
   const atras = cara(1, add(p.c, mul(n, d)), neg(r), u, p.w, p.h); atras.k = Math.max(atras.k, 0.9);
   return [
@@ -356,7 +379,7 @@ const metersPerPx = d => d * 2 * tans()[0] / W;   // cuánto mide un px a distan
 // cada lado (y los tercios mientras se recorta); escalar: cuadraditos en las esquinas y en el medio de los lados.
 // El lado que se está moviendo va en amarillo: su línea del marco y sus agarraderas, con la misma forma (sin barras encimadas).
 const COLOR_RECORTE = [1, 0.85, 0.2];
-function drawFramed(p, tex, color, deco = null) {
+function drawFramed(p, tex, color, deco = null, ci = undefined) {
   const d = len(sub(p.c, pos));
   const m = OUTLINE_PX * metersPerPx(d);
   let n = norm(cross(p.r, p.u));
@@ -364,10 +387,11 @@ function drawFramed(p, tex, color, deco = null) {
   const atras = add(p.c, mul(n, 0.004 * d));
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
-  const caras = cajaCaras(p);                            // una caja (extruida): las otras 5 caras
+  const caras = cajaCaras(p, ci);                        // una caja (extruida): las otras 5 caras (ci: sus fotos propias)
   if (caras) for (let i = 1; i < caras.length; i++) {
     const f = caras[i];
-    if (f.t === 'c') { const c = colorBorde(tex, p.uv || FULL, CARA_LADO[i]); drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h), white, [c[0] * f.k, c[1] * f.k, c[2] * f.k]); }
+    if (f.img) drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), f.img.tex, [f.k, f.k, f.k]);
+    else if (f.t === 'c') { const c = colorBorde(tex, p.uv || FULL, CARA_LADO[i]); drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h), white, [c[0] * f.k, c[1] * f.k, c[2] * f.k]); }
     else drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k]);
   }
   if (deco) {
@@ -513,7 +537,7 @@ function addWork(o, img) {
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
-  w.cc = ccValida(o.cc);                                 // y qué lleva cada cara (v10.20)
+  w.cc = ccConFotos(o.cc, o.co);                         // y qué lleva cada cara (v10.20; co: las que tienen su foto, v10.21)
   setBuf(w);
   works.push(w);
   return w;
@@ -967,7 +991,16 @@ function tocarCara(x, y) {
 function setCara(t) {
   if (!caraSel || !caraOpsEl) return;
   const L = cur(), cc = (ccValida(L.cc) || 'mmmmm').split('');
-  if (t === 'todas') { const v = cc[caraSel - 1]; for (let i = 0; i < 5; i++) cc[i] = i === 0 && v === 'b' ? cc[0] : v; }
+  if (t === 'todas') {
+    const v = cc[caraSel - 1];
+    if (v === 'o') {                                     // otra foto a todas: la misma imagen en las 5 (una sola textura)
+      const e = ciVer(caraSel);
+      if (!e || !puedeFotoCara()) { showHint('esa cara todavía no tiene su foto'); return; }
+      held.ciN = held.ciN || {};
+      for (let i = 1; i <= 5; i++) held.ciN[i] = e;
+    }
+    for (let i = 0; i < 5; i++) cc[i] = i === 0 && v === 'b' ? cc[0] : v;
+  }
   else cc[caraSel - 1] = t;
   L.cc = ccValida(cc.join(''));
   buzz(8); pintarCaras();
@@ -982,15 +1015,131 @@ function pintarCaras() {
   if (caraSel && plana) caraSel = 0;                     // la aplanaste: no hay caras
   caraOpsEl.style.display = on ? '' : 'none';
   if (!on) return;
-  const t = (ccValida(L.cc) || 'mmmmm')[caraSel - 1];
+  let t = (ccValida(L.cc) || 'mmmmm')[caraSel - 1];
+  if (t === 'o' && !ciVer(caraSel)) t = 'm';            // sin su imagen se ve como la misma
   $('caraNombre').textContent = CARA_NOMBRE[caraSel] + ':';
   for (const el of caraOpsEl.querySelectorAll('[data-t]')) {
     el.classList.toggle('on', el.dataset.t === t);
     el.style.display = el.dataset.t === 'b' && caraSel === 1 ? 'none' : '';   // atrás no toca ningún borde de la foto
   }
+  const fo = $('caraFoto');
+  fo.classList.toggle('on', t === 'o');
+  fo.style.display = puedeFotoCara() ? '' : 'none';
 }
 if (caraOpsEl) for (const el of caraOpsEl.querySelectorAll('[data-t]')) el.addEventListener('click', () => setCara(el.dataset.t));
 if (caraOpsEl) $('caraTodas').addEventListener('click', () => setCara('todas'));
+if (caraOpsEl) $('caraFoto').addEventListener('click', () => elegirFotoCara());
+
+// otra foto en una cara (v10.21, propuesta 7, parte 3): en las opciones de la cara, "foto" abre cámara / galería (el
+// mismo selector que para llenar la foto) y esa imagen va en esa cara, recortada al centro con su forma (si cambia el
+// tamaño de la caja, se vuelve a recortar). Sirve también para llenar un bloque vacío extruido cara por cara. Solo con
+// algo en la mano y, por ahora, solo en el museo (en la sala: la parte que sigue). Mientras la tenés en la mano, lo
+// elegido está en held.ciN (cara → {tex, a, g, c}); se guarda al soltar con ✓ (ciAplicar) y cancelar lo descarta.
+// Museo: cada cara en su propio registro de IndexedDB '<id>~c<i>' = {id, obra, i, cara: blob, a, g} (los v10.20 no los
+// ven: no tienen blob ni vacio). g: las caras con la misma imagen ("a todas") la comparten al cargar (una textura).
+const puedeFotoCara = () => !!held && !held.aim && !sala.active;
+// la imagen de la cara i de lo que tenés en la mano: la elegida ahora o la que ya tenía
+function ciVer(i) {
+  if (!held) return null;
+  if (held.ciN && i in held.ciN) return held.ciN[i];
+  return (held.work.ci && held.work.ci[i]) || null;
+}
+function ciMano() {
+  if (!held || (!held.ciN && !held.work.ci)) return undefined;
+  const r = [];
+  for (let i = 1; i <= 5; i++) r[i] = ciVer(i);
+  return r;
+}
+// una copia de la imagen para la cara (a lo sumo 768 px: es lo que se guarda; la textura, a 512 como todas)
+function copiaCara(src) {
+  const sw = src.naturalWidth || src.videoWidth || src.width, sh = src.naturalHeight || src.videoHeight || src.height;
+  const k = Math.min(1, 768 / Math.max(sw, sh)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+let archivoCara = null;   // {i, held}: el selector de archivo se abrió para una cara (no para la foto)
+function elegirFotoCara() {
+  if (!caraSel || !puedeFotoCara()) return;
+  archivoCara = { i: caraSel, held };
+  $('bloqueArchivo').click();   // en el iPhone: sacar foto / fototeca / archivos
+}
+function llenarCara(src, i) {
+  if (!puedeFotoCara() || !(i >= 1 && i <= 5)) return;
+  const L = cur(), c = copiaCara(src);
+  const e = { tex: texture(small(c)), a: c.height / c.width, g: Math.random().toString(36).slice(2, 8), c };
+  held.ciN = held.ciN || {}; held.ciN[i] = e;
+  (held.ciCreadas = held.ciCreadas || []).push(e);
+  const cc = (ccValida(L.cc) || 'mmmmm').split(''); cc[i - 1] = 'o'; L.cc = ccValida(cc.join(''));
+  flash.style.transition = 'none'; flash.style.opacity = 0.5;
+  requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
+  buzz(12);
+  if (caraSel === i) pintarCaras();
+  extruirTxt = '';
+  showHint(CARA_NOMBRE[i] + ': otra foto · soltala con ✓ para guardarla');
+}
+// borrar las texturas de estas imágenes de cara que no estén en usadas (una vez cada una)
+function ciBorrar(lista, usadas = new Set()) {
+  const ya = new Set();
+  for (const e of lista) if (e && !usadas.has(e) && !ya.has(e.tex)) { ya.add(e.tex); gl.deleteTexture(e.tex); }
+}
+// al soltar con ✓: las caras con 'o' se quedan con su imagen (la nueva o la que tenían); las otras la pierden
+function ciAplicar(h, w, ccAntes) {
+  const cc = ccValida(w.cc) || 'mmmmm', viejo = w.ci || [], nuevo = [];
+  for (let i = 1; i <= 5; i++) nuevo[i] = cc[i - 1] === 'o' ? ((h.ciN && i in h.ciN ? h.ciN[i] : viejo[i]) || null) : null;
+  const usadas = new Set(nuevo.filter(Boolean));
+  ciBorrar([...viejo, ...(h.ciCreadas || [])], usadas);
+  h.ciN = null; h.ciCreadas = null;
+  w.ci = usadas.size ? nuevo : undefined;
+  // (también se borra el registro de una cara que tenía foto y ya no, aunque su imagen todavía no hubiera cargado)
+  const antes = ccValida(ccAntes) || 'mmmmm';
+  if (!sala.active) for (let i = 1; i <= 5; i++) if (nuevo[i] !== (viejo[i] || null) || (antes[i - 1] === 'o' && cc[i - 1] !== 'o')) guardarCara(w, i, nuevo[i]);
+}
+// soltada sin ✓: lo elegido para las caras se descarta
+function ciDescartar(h, w) {
+  if (h && h.ciCreadas) ciBorrar(h.ciCreadas, new Set((w && w.ci) || []));
+  if (h) { h.ciN = null; h.ciCreadas = null; }
+}
+function guardarCara(w, i, e) {
+  const id = w.id + '~c' + i;
+  w.ciGen = w.ciGen || {};
+  const n = w.ciGen[i] = (w.ciGen[i] || 0) + 1;   // si se vuelve a cambiar antes de terminar, gana lo último
+  if (!e) { store('readwrite', s => s.delete(id)).catch(() => {}); return; }
+  e.blobP = e.blobP || new Promise(res => e.blob ? res(e.blob) : e.c ? e.c.toBlob(res, 'image/jpeg', 0.85) : res(null));
+  e.blobP.then(blob => {
+    if (blob && !e.blob) { e.blob = blob; e.c = null; }   // ya no hace falta el lienzo
+    if (!works.includes(w) || w.ciGen[i] !== n) return;
+    if (!blob) { diag('caja: no pude guardar la foto de una cara'); return; }
+    store('readwrite', s => s.put({ id, obra: w.id, i, cara: blob, a: e.a, g: e.g })).catch(() => {});
+  });
+}
+// al cargar el museo: la foto de una cara (su obra ya está cargada: la clave '<id>~c<i>' va después de '<id>')
+async function cargarCara(o) {
+  const i = Number(String(o.id).slice(-1)), w = works.find(x => x.id === o.obra);
+  if (sala.active || !w || !(o.cara instanceof Blob) || !o.cara.size || (ccValida(w.cc) || '')[i - 1] !== 'o') return;
+  const otra = w.ci && o.g && w.ci.find(e => e && e.g === o.g);
+  let e = otra;
+  if (!e) {
+    let url = null;
+    try {
+      // una copia en memoria: un Blob de IndexedDB leído mucho después puede fallar en WebKit (si hay que volver a guardarlo)
+      const blob = new Blob([await o.cara.arrayBuffer()], { type: o.cara.type || 'image/jpeg' });
+      url = URL.createObjectURL(blob);
+      const img = new Image(); img.src = url;
+      await Promise.race([img.decode(), new Promise((_, rej) => setTimeout(() => rej(new Error('tardó')), 5000))]);
+      // mientras cargaba: salir, borrarla, otra foto en esa cara (gana la nueva) o la cara ya no lleva foto
+      if (sala.active || !works.includes(w) || (w.ci && w.ci[i]) || (ccValida(w.cc) || '')[i - 1] !== 'o') return;
+      e = { tex: texture(small(img)), a: img.naturalHeight / img.naturalWidth, g: o.g, blob };
+      img.src = '';
+    } catch (err) { diag('museo: no pude abrir la foto de una cara (' + err.message + ')'); return; }
+    finally { if (url) URL.revokeObjectURL(url); }
+  }
+  if (!(e.a > 0) || !Number.isFinite(e.a)) return;
+  w.ci = w.ci || [];
+  if (w.ci[i]) return;                                   // ya tiene (la eligieron mientras tanto)
+  w.ci[i] = e;
+  setBuf(w);
+}
 
 // zoom del contenido: achica/agranda la ventana uv alrededor de su centro
 function zoomContent(L, uv0, k) {
@@ -1113,21 +1262,23 @@ function stepAim(dt) {
   if ((Math.abs(eh) < 0.002 && Math.abs(ee) < 0.002) || a.t > 0.9) finishAim();
 }
 function releaseHold() {
-  const w = held && held.work;
+  const h = held, w = held && held.work;
   held = null;
+  ciDescartar(h, w);                                     // fotos de caras elegidas y no guardadas (sin ✓)
   if (w) { deshacerRelleno(w); if (sala.active) salaSoltado(w); }
   setMode('mover'); if (ajustando) setAjustar(false); ui();
 }
 function clearWorks() {
+  ciDescartar(held, held && held.work);
   held = null; caraSel = 0;
-  for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
+  for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); if (w.ci) ciBorrar(w.ci); }
   works.length = 0;
 }
 
 function drop() {
   if (!held) return;
   cur();
-  const w = held.work;
+  const w = held.work, ccAntes = w.cc;
   Object.assign(w, heldPose(basis(), true));
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
@@ -1140,16 +1291,18 @@ function drop() {
   const imgN = w.imgN;
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
+  ciAplicar(held, w, ccAntes);                           // las fotos de las caras (v10.21): antes de armar sus caras
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc };
+  const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc) };   // cc sin 'o' + co (ver ccGuardar)
   if (sala.active) {
     if (relleno && relleno.vaciar) salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
     else salaSavePose(w);
   } else if (relleno && relleno.vaciar) {
-    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose, blob: null, vacio: true, son: null }); }).catch(() => {});
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, blob: null, vacio: true, son: null }); }).catch(() => {});
   } else {
-    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo }); }).catch(() => {});
     // el bloque lleno: la imagen se agrega al registro que haya (si mientras tanto lo borraste, no lo revive)
     if (relleno) relleno.c.toBlob(blob => {
       if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
@@ -1168,8 +1321,9 @@ function trash() {
   works.splice(works.indexOf(w), 1);
   if (w.relleno) { gl.deleteTexture(w.relleno.texVieja); w.relleno = null; }
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
+  if (w.ci) { ciBorrar(w.ci); w.ci = undefined; }
   if (sala.active) salaRemove(w);
-  else store('readwrite', s => s.delete(w.id)).catch(() => {});
+  else store('readwrite', s => { s.delete(w.id); for (let i = 1; i <= 5; i++) s.delete(w.id + '~c' + i); }).catch(() => {});
   buzz(20);
   releaseHold();
 }
@@ -1321,6 +1475,7 @@ async function loadWorks() {
   const keys = await store('readonly', s => s.getAllKeys());
   for (const k of keys || []) {
     const o = await store('readonly', s => s.get(k));
+    if (o && typeof o.id === 'string' && /~c[1-5]$/.test(o.id)) { await cargarCara(o); continue; }   // la foto de una cara (v10.21)
     if (o && o.vacio && !o.blob) { if (!sala.active) addWork(o, VACIO_IMG); continue; }
     if (!o || !o.blob) continue;
     const url = URL.createObjectURL(o.blob);
@@ -1597,7 +1752,8 @@ $('bloqueArchivo').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
   if (!f) return;
   const url = URL.createObjectURL(f), img = new Image();
-  try { img.src = url; await img.decode(); llenarBloque(img); }
+  const ac = archivoCara; archivoCara = null;
+  try { img.src = url; await img.decode(); if (ac && ac.held === held && held) llenarCara(img, ac.i); else if (!ac) llenarBloque(img); }
   catch (err) { showHint('no pude abrir esa imagen'); diag('bloque: no pude abrir la imagen (' + (err && err.message) + ')'); }
   finally { URL.revokeObjectURL(url); }
 });
@@ -1906,7 +2062,7 @@ function endTouch(e) {
 let abrirArchivoHasta = 0;
 canvas.addEventListener('click', () => {
   if (performance.now() > abrirArchivoHasta || !held) return;
-  abrirArchivoHasta = 0;
+  abrirArchivoHasta = 0; archivoCara = null;
   $('bloqueArchivo').click();   // en el iPhone abre el menú: sacar foto / fototeca / archivos
 });
 canvas.addEventListener('pointerup', endTouch);
@@ -2146,7 +2302,7 @@ function escena(b, dt, yo) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
       tex = videoTex;
     }
-    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], deco());
+    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], deco(), ciMano());
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
