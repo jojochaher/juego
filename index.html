@@ -207,6 +207,11 @@
     display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; z-index: 3; pointer-events: none; padding: 0 8px;
   }
   #modes .pill { pointer-events: auto; }
+  /* extruir: qué lleva la cara elegida (v10.20) */
+  #caraOps { flex-basis: 100%; display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  #caraNombre { font-size: 12px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+  #caraOps .pill { background: rgba(0,0,0,0.45); }
+  #caraOps .pill.on { background: rgba(255,255,255,0.9); color: #111; }
   #menuBtn { font-size: 15px; padding: 6px 13px; }
   .hojaAbajo {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
@@ -259,6 +264,7 @@
   <div id="menuBtn" class="ctl pill" style="display:none" aria-label="opciones">☰</div>
 </div>
 <div id="modes" style="display:none">
+  <div id="caraOps" style="display:none"><span id="caraNombre">atrás:</span><div class="pill" data-t="m">la misma</div><div class="pill" data-t="e">espejada</div><div class="pill" data-t="b">borde</div><div class="pill" data-t="c">color</div><div class="pill" id="caraTodas">a todas</div></div>
   <div class="pill" data-m="recortar">recortar</div>
   <div class="pill" data-m="escalar">escalar</div>
   <div class="pill" data-m="girar">girar</div>

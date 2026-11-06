@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.19';
+const VERSION = 'v10.20';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -190,11 +190,26 @@ colX.imageSmoothingQuality = 'high';   // de 512 a 8 px de un saque: sin esto pr
 function colorMedio(src) {
   try {
     colX.clearRect(0, 0, 8, 8); colX.drawImage(src, 0, 0, 8, 8);
-    const d = colX.getImageData(0, 0, 8, 8).data, s = [0, 0, 0];
-    for (let i = 0; i < d.length; i += 4) { s[0] += d[i]; s[1] += d[i + 1]; s[2] += d[i + 2]; }
+    const d = colX.getImageData(0, 0, 8, 8).data, s = [0, 0, 0], g = new Float32Array(192);
+    for (let i = 0; i < d.length; i += 4) { s[0] += d[i]; s[1] += d[i + 1]; s[2] += d[i + 2]; g[i / 4 * 3] = d[i] / 255; g[i / 4 * 3 + 1] = d[i + 1] / 255; g[i / 4 * 3 + 2] = d[i + 2] / 255; }
     const c = s.map(x => x / 64 / 255);
-    return c.every(Number.isFinite) ? c : null;
+    return c.every(Number.isFinite) ? { c, g } : null;
   } catch (e) { return null; }
+}
+// los 8x8 colores de cada textura (para el color del borde de una cara de caja, v10.20)
+const texGrid = new WeakMap();
+// el color de un borde de la imagen dentro del recorte uv: lado 'r' / 'l' / 't' / 'b' (la columna o fila de la punta) o
+// null (todo el recorte). Sin los 8x8 (la vista previa de la cámara), el color promedio o un gris.
+function colorBorde(tex, uv, lado) {
+  const g = texGrid.get(tex);
+  if (!g) return texCol.get(tex) || [0.5, 0.5, 0.5];
+  const cel = v => clamp(Math.floor(v * 8), 0, 7), celFin = v => clamp(Math.ceil(v * 8) - 1, 0, 7);
+  const x0 = Math.min(uv[0], uv[2]), x1 = Math.max(uv[0], uv[2]), y0 = Math.min(uv[1], uv[3]), y1 = Math.max(uv[1], uv[3]);
+  let cx0 = cel(x0), cx1 = Math.max(cx0, celFin(x1)), cy0 = cel(y0), cy1 = Math.max(cy0, celFin(y1));
+  if (lado === 'r') cx0 = cx1; else if (lado === 'l') cx1 = cx0; else if (lado === 't') cy1 = cy0; else if (lado === 'b') cy0 = cy1;
+  const s = [0, 0, 0]; let n = 0;
+  for (let y = cy0; y <= cy1; y++) for (let x = cx0; x <= cx1; x++) { const i = (y * 8 + x) * 3; s[0] += g[i]; s[1] += g[i + 1]; s[2] += g[i + 2]; n++; }
+  return s.map(v => v / n);
 }
 function texture(src) {
   const t = gl.createTexture();
@@ -203,7 +218,7 @@ function texture(src) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  if (src) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src); const c = colorMedio(src); if (c) texCol.set(t, c); }
+  if (src) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src); const m = colorMedio(src); if (m) { texCol.set(t, m.c); texGrid.set(t, m.g); } }
   else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
   return t;
 }
@@ -257,7 +272,20 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0) {
 function drawObra(w, alpha = 1) {
   if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);
   drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);        // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
-  for (let i = 1; i < w.caras.length; i++) { const k = w.caras[i].k; gl.uniform3f(Q.tint, k, k, k); gl.drawArrays(gl.TRIANGLES, i * 6, 6); }
+  let lisas = false;
+  for (let i = 1; i < w.caras.length; i++) {
+    const f = w.caras[i];
+    if (f.t === 'c') { lisas = true; continue; }
+    gl.uniform3f(Q.tint, f.k, f.k, f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
+  }
+  if (!lisas) return;
+  gl.bindTexture(gl.TEXTURE_2D, white);                  // las de color liso (v10.20): blanco teñido con el color del borde
+  for (let i = 1; i < w.caras.length; i++) {
+    const f = w.caras[i];
+    if (f.t !== 'c') continue;
+    const c = caraColor(f, i, w.tex, w.uv);
+    gl.uniform3f(Q.tint, c[0] * f.k, c[1] * f.k, c[2] * f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
+  }
 }
 
 // ---------- extruir (v10.19, propuesta 7 de José, parte 1): fotos que se vuelven cajas ----------
@@ -268,9 +296,22 @@ function drawObra(w, alpha = 1) {
 // afuera de la caja (así se lee derecha, no espejada, desde afuera).
 const D_MAX = 40;
 const dValida = d => Number.isFinite(d) && d > 1e-4 ? Math.min(d, D_MAX) : undefined;
+// qué lleva cada una de las otras 5 caras (v10.20, parte 2): cc = 5 letras, en el orden atrás, costado derecho, costado
+// izquierdo, arriba, abajo: m = la misma imagen (derecha desde afuera, como en v10.19), e = espejada (sigue desde el borde
+// de la foto como en un espejo: sin costura en la arista), b = el borde de la foto estirado (se "derrama" hacia atrás),
+// c = un color liso: el del borde de la foto de ese lado (atrás: el de toda la foto). Atrás no tiene borde: b no vale.
+// Sin cc (o 'mmmmm'): todas la misma.
+const CARA_NOMBRE = ['la foto', 'atrás', 'el costado derecho', 'el costado izquierdo', 'arriba', 'abajo'];
+const CARA_LADO = [null, null, 'r', 'l', 't', 'b'];   // de qué lado de la foto toca cada cara (para el borde y su color)
+function ccValida(s) {
+  if (typeof s !== 'string' || !/^[mebc]{5}$/.test(s)) return undefined;
+  if (s[0] === 'b') s = 'm' + s.slice(1);
+  return s === 'mmmmm' ? undefined : s;
+}
 function cajaCaras(p) {
   const d = dValida(p.d);
   if (!d) return null;
+  const cc = ccValida(p.cc) || 'mmmmm';
   const n = mul(norm(cross(p.r, p.u)), -1), r = p.r, u = p.u, C = add(p.c, mul(n, d / 2)), uv = p.uv || FULL;
   const aw = uv[2] - uv[0], ah = uv[3] - uv[1], su = aw / p.w, sv = ah / p.h;
   const recorte = (w, h) => {
@@ -280,17 +321,30 @@ function cajaCaras(p) {
     return [cu - a / 2, cv - b / 2, cu + a / 2, cv + b / 2];
   };
   const neg = v => mul(v, -1);
-  const cara = (c, rr, uu, w, h) => {
-    const fuera = norm(cross(rr, uu));
-    return { c, r: rr, u: uu, w, h, uv: recorte(w, h), k: clamp(0.72 + 0.25 * fuera[1], 0.5, 1) };
+  // espejada y borde: la cara arranca en la arista que comparte con la foto. a/b = cuánto de la imagen entra en la
+  // profundidad (con la misma escala; si la caja es más honda que la foto, se estira)
+  const a = Math.min(d * su, aw), b = Math.min(d * sv, ah), E = 0.002;
+  const [u0, v0, u1, v1] = uv;
+  const UV = {
+    e: [null, [u1, v0, u0, v1], [u1, v0, u1 - a, v1], [u0 + a, v0, u0, v1], [u0, v0 + b, u1, v0], [u0, v1, u1, v1 - b]],
+    b: [null, null, [u1 - E, v0, u1 - E, v1], [u0 + E, v0, u0 + E, v1], [u0, v0 + E, u1, v0 + E], [u0, v1 - E, u1, v1 - E]],
   };
-  const atras = cara(add(p.c, mul(n, d)), neg(r), u, p.w, p.h); atras.k = Math.max(atras.k, 0.9);
+  const cara = (i, c, rr, uu, w, h) => {
+    const fuera = norm(cross(rr, uu)), t = cc[i - 1];
+    return { c, r: rr, u: uu, w, h, uv: (UV[t] && UV[t][i]) || recorte(w, h), k: clamp(0.72 + 0.25 * fuera[1], 0.5, 1), t };
+  };
+  const atras = cara(1, add(p.c, mul(n, d)), neg(r), u, p.w, p.h); atras.k = Math.max(atras.k, 0.9);
   return [
-    { c: p.c, r, u, w: p.w, h: p.h, uv: uv.slice(), k: 1 },             // adelante: la foto
+    { c: p.c, r, u, w: p.w, h: p.h, uv: uv.slice(), k: 1, t: 'f' },     // adelante: la foto
     atras,                                                              // atrás: la misma, derecha desde atrás
-    cara(add(C, mul(r, p.w / 2)), n, u, d, p.h), cara(sub(C, mul(r, p.w / 2)), neg(n), u, d, p.h),   // costados
-    cara(add(C, mul(u, p.h / 2)), r, n, p.w, d), cara(sub(C, mul(u, p.h / 2)), r, neg(n), p.w, d),   // arriba y abajo
+    cara(2, add(C, mul(r, p.w / 2)), n, u, d, p.h), cara(3, sub(C, mul(r, p.w / 2)), neg(n), u, d, p.h),   // costados
+    cara(4, add(C, mul(u, p.h / 2)), r, n, p.w, d), cara(5, sub(C, mul(u, p.h / 2)), r, neg(n), p.w, d),   // arriba y abajo
   ];
+}
+// el color liso de una cara 'c' (se guarda en la cara; se vuelve a calcular si cambió la imagen)
+function caraColor(f, i, tex, uv) {
+  if (f.colTex !== tex) { f.col = colorBorde(tex, uv || FULL, CARA_LADO[i]); f.colTex = tex; }
+  return f.col;
 }
 
 // el fov va sobre el lado más corto de la pantalla (celu vertical: el ancho; compu apaisada: el alto)
@@ -311,7 +365,11 @@ function drawFramed(p, tex, color, deco = null) {
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
   const caras = cajaCaras(p);                            // una caja (extruida): las otras 5 caras
-  if (caras) for (let i = 1; i < caras.length; i++) { const f = caras[i]; drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k]); }
+  if (caras) for (let i = 1; i < caras.length; i++) {
+    const f = caras[i];
+    if (f.t === 'c') { const c = colorBorde(tex, p.uv || FULL, CARA_LADO[i]); drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h), white, [c[0] * f.k, c[1] * f.k, c[2] * f.k]); }
+    else drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k]);
+  }
   if (deco) {
     // sin prueba de profundidad: el borde oscuro y el centro blanco de los cuadraditos están en el mismo plano y,
     // con la precisión de profundidad del iPhone, titilaban (z-fighting). Se pintan en orden, encima de la foto.
@@ -332,7 +390,7 @@ function agarraderas(p, n, d, m, deco) {
     if (alfa < 1) gl.disable(gl.BLEND);
   };
   const B = [1, 1, 1], Y = COLOR_RECORTE;
-  if (deco.modo === 'extruir') { aristasCaja(p, Y); return; }
+  if (deco.modo === 'extruir') { aristasCaja(p, Y, deco.cara); return; }
   const cl = k => act[k] ? Y : B;
   // el lado activo: su línea del marco, en amarillo (justo encima del marco, mismo grosor)
   const lineaActiva = () => {
@@ -375,7 +433,7 @@ function agarraderas(p, n, d, m, deco) {
 
 // extruir: las aristas de la caja en amarillo, también las de atrás (se ven a través de la foto): de frente la caja
 // tapa su propia profundidad y, sin esto, al arrastrar no se vería que crece
-function aristasCaja(p, col) {
+function aristasCaja(p, col, sel = 0) {
   const caras = cajaCaras(p);
   if (!caras) return;
   const n = mul(norm(cross(p.r, p.u)), -1), q = (sx, sy, sz) => add(p.c, add(add(mul(p.r, sx * p.w / 2), mul(p.u, sy * p.h / 2)), mul(n, sz * p.d)));
@@ -385,12 +443,19 @@ function aristasCaja(p, col) {
     const mid = add(a, mul(dir, 0.5)), t = mul(dir, 1 / largo);
     let lado = cross(t, sub(mid, pos));
     if (len(lado) < 1e-6) return;
-    drawQuad(scratch, quadData(mid, norm(lado), t, metersPerPx(Math.max(0.2, len(sub(mid, pos)))) * 2.5, largo), white, col, 0.9);
+    drawQuad(scratch, quadData(mid, norm(lado), t, metersPerPx(Math.max(0.2, len(sub(mid, pos)))) * grueso, largo), white, col, 0.9);
   };
+  let grueso = 2.5;
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) linea(q(sx, sy, 0), q(sx, sy, 1));   // de adelante para atrás
   const vuelta = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]];
   for (let i = 0; i < 4; i++) linea(q(...vuelta[i], 1), q(...vuelta[i + 1], 1));                    // la cara de atrás
+  const f = sel > 0 && caras[sel];
+  if (f) {                                               // la cara que se está eligiendo (v10.20): su borde en blanco, más grueso
+    const esq = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].map(([sx, sy]) => add(f.c, add(mul(f.r, sx * f.w / 2), mul(f.u, sy * f.h / 2))));
+    grueso = 4.5; col = [1, 1, 1];
+    for (let i = 0; i < 4; i++) linea(esq[i], esq[i + 1]);
+  }
   gl.disable(gl.BLEND);
 }
 
@@ -415,7 +480,7 @@ const works = []; // {id, c, r, u, w, h, uv, aspect, tex, buf}
 // Cada cara sabe de qué obra es (obra) y hasta dónde llega la caja arriba (top: una caja baja se sube como un escalón).
 function setBuf(w) {
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
-  w.d = dValida(w.d);
+  w.d = dValida(w.d); w.cc = ccValida(w.cc);
   const caras = w.d && !w.rota ? cajaCaras(w) : null;   // una rota no choca ni es caja (pero no pierde su profundidad)
   if (caras) {
     const top = Math.max(...caras.map(f => f.c[1] + (Math.abs(f.r[1]) * f.w + Math.abs(f.u[1]) * f.h) / 2));
@@ -448,6 +513,7 @@ function addWork(o, img) {
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
+  w.cc = ccValida(o.cc);                                 // y qué lleva cada cara (v10.20)
   setBuf(w);
   works.push(w);
   return w;
@@ -485,6 +551,7 @@ function ponerBloque() {
   const p = previewPose(basis());
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: p.c, r: p.r, u: p.u, w: p.w, h: p.h, uv: FULL.slice(), vacio: true, t0: Date.now() };
   if (p.d) o.d = p.d;                                    // el bloque equipado extruido: pone cajas (v10.19)
+  if (p.d && p.cc) o.cc = p.cc;                          // con sus caras elegidas (v10.20)
   if (sala.active) o.de = salaDe();
   addWork(o, VACIO_IMG);
   if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
@@ -584,7 +651,7 @@ const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : en
 const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur().c);
 
 function worldPose(b, L) {
-  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice(), d: dValida(L.d) };
+  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice(), d: dValida(L.d), cc: ccValida(L.cc) };
 }
 
 // ---------- colisiones: las fotos son paredes y pisos ----------
@@ -742,7 +809,7 @@ function snapPose(p, P = pasoGrilla) {
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
   const corner = c0.map(v => snapP(v, P));
   const d = p.d > 0 ? dValida(snapP(p.d, P)) : undefined;   // la profundidad de una caja, de a un paso (o nada)
-  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d };
+  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d, cc: p.cc };
 }
 // guías: la grilla en 3D (de a pasoGrilla) alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R de la foto
 // (alfa según la distancia a la foto: las líneas a GUIA_R o más ya no se ven, así que no se dibujan).
@@ -860,7 +927,71 @@ function extruirBy(L, dd) {
   const p = held ? heldPose(basis()) : previewPose(basis());
   const t = p.d ? 'profundidad: ' + largoTxt(p.d) : 'sin profundidad: una foto';
   if (t !== extruirTxt) { extruirTxt = t; showHint(t); }
+  if (caraSel) pintarCaras();
 }
+// elegir qué lleva cada cara de la caja que tenés en la mano (v10.20, propuesta 7, parte 2): en extruir, tocar una cara
+// (sin arrastrar) la elige (su borde en blanco) y arriba de ajustar aparecen las opciones: la misma / espejada / borde /
+// color, y "a todas". Va en la pose de la mano (L.cc): se guarda al soltar con ✓, como la profundidad.
+let caraSel = 0;
+const caraOpsEl = $('caraOps');
+// qué cara de la caja en la mano está en (x, y): su número (0 = la foto) o -1 (no es una caja o no la tocaste)
+function caraEn(x, y) {
+  if (held && held.aim) return -1;
+  const b = basis(), p = held ? heldPose(b) : previewPose(b);
+  const caras = cajaCaras(p);
+  if (!caras) return -1;
+  const d = rayoEn(x, y);
+  let best = -1, bt = Infinity;
+  caras.forEach((f, i) => {
+    const n = cross(f.r, f.u), den = dot(d, n);
+    if (Math.abs(den) < 1e-6) return;
+    const t = dot(sub(f.c, pos), n) / den;
+    if (t <= 0 || t >= bt) return;
+    const q = sub(add(pos, mul(d, t)), f.c);
+    if (Math.abs(dot(q, f.r)) <= f.w / 2 + 1e-4 && Math.abs(dot(q, f.u)) <= f.h / 2 + 1e-4) { best = i; bt = t; }
+  });
+  return best;
+}
+function tocarCara(x, y) {
+  const i = caraEn(x, y);
+  if (i < 0) { if (caraSel) { caraSel = 0; pintarCaras(); } return false; }
+  if (i === 0) {
+    caraSel = 0; pintarCaras();
+    if (!held) return false;                              // la vista previa: el toque sigue (agarrar lo que se ve a través, tocar a alguien)
+    showHint('esa es la foto · tocá otra cara (con girar la das vuelta para ver las de atrás)'); return true;
+  }
+  caraSel = i; buzz(8); pintarCaras(); extruirTxt = '';
+  showHint(CARA_NOMBRE[i] + ': elegí qué lleva');
+  return true;
+}
+function setCara(t) {
+  if (!caraSel || !caraOpsEl) return;
+  const L = cur(), cc = (ccValida(L.cc) || 'mmmmm').split('');
+  if (t === 'todas') { const v = cc[caraSel - 1]; for (let i = 0; i < 5; i++) cc[i] = i === 0 && v === 'b' ? cc[0] : v; }
+  else cc[caraSel - 1] = t;
+  L.cc = ccValida(cc.join(''));
+  buzz(8); pintarCaras();
+  if (t === 'todas') showHint('todas las caras así');
+}
+function pintarCaras() {
+  if (!caraOpsEl) return;
+  const L = held ? (held.aim ? null : held.L) : enMano();
+  // lo que se ve (con la grilla, menos de medio paso de profundidad es plana aunque L.d tenga algo)
+  const plana = !!L && !(held ? heldPose(basis()) : previewPose(basis())).d;
+  const on = !!(caraSel && L && mode === 'extruir' && ajustando && !plana);
+  if (caraSel && plana) caraSel = 0;                     // la aplanaste: no hay caras
+  caraOpsEl.style.display = on ? '' : 'none';
+  if (!on) return;
+  const t = (ccValida(L.cc) || 'mmmmm')[caraSel - 1];
+  $('caraNombre').textContent = CARA_NOMBRE[caraSel] + ':';
+  for (const el of caraOpsEl.querySelectorAll('[data-t]')) {
+    el.classList.toggle('on', el.dataset.t === t);
+    el.style.display = el.dataset.t === 'b' && caraSel === 1 ? 'none' : '';   // atrás no toca ningún borde de la foto
+  }
+}
+if (caraOpsEl) for (const el of caraOpsEl.querySelectorAll('[data-t]')) el.addEventListener('click', () => setCara(el.dataset.t));
+if (caraOpsEl) $('caraTodas').addEventListener('click', () => setCara('todas'));
+
 // zoom del contenido: achica/agranda la ventana uv alrededor de su centro
 function zoomContent(L, uv0, k) {
   const cu = (uv0[0] + uv0[2]) / 2, cv = (uv0[1] + uv0[3]) / 2;
@@ -966,7 +1097,7 @@ function pick(w) {
 }
 function finishAim() {
   const w = held.work, b = basis();
-  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice(), d: w.d };
+  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice(), d: w.d, cc: w.cc };
   held.aim = null;
 }
 function stepAim(dt) {
@@ -988,7 +1119,7 @@ function releaseHold() {
   setMode('mover'); if (ajustando) setAjustar(false); ui();
 }
 function clearWorks() {
-  held = null;
+  held = null; caraSel = 0;
   for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); }
   works.length = 0;
 }
@@ -1010,7 +1141,7 @@ function drop() {
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
   setBuf(w);
-  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d };
+  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc };
   if (sala.active) {
     if (relleno && relleno.vaciar) salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
@@ -1329,10 +1460,12 @@ const MODE_HINT = {
   recortar: 'borde o esquina: recortar · adentro: mover la imagen · dos dedos: zoom',
   escalar: 'borde: estirar a lo ancho o a lo alto · esquina: las dos cosas · dos dedos: tamaño',
   girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
-  extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño',
+  extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño · tocá una cara: qué lleva',
 };
 function setMode(m) {
   mode = m; extruirTxt = '';
+  if (m !== 'extruir') caraSel = 0;
+  pintarCaras();
   for (const el of modesEl.querySelectorAll('[data-m]')) el.classList.toggle('on', el.dataset.m === m);
 }
 // modos de ajuste: tocar uno lo activa; tocar el activo vuelve a "mover" (el normal)
@@ -1381,6 +1514,7 @@ function ui() {
   show(distEl, canEdit);
   show($('edicion'), canEdit);
   show(modesEl, canEdit && ajustando);
+  pintarCaras();
   show(shootBtn, started && previa && !holding);
   shootBtn.classList.toggle('bloque', bloqueOn);
   show(equipBtn, started && !camOn && !bloqueOn && !holding);
@@ -1756,6 +1890,9 @@ function endTouch(e) {
   if (!t) return;
   touches.delete(e.pointerId);
   if (touches.size < 2) gesture = null;
+  // extruir: tocar una cara de la caja la elige (v10.20); si no tocaste la caja, sigue como siempre
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && mode === 'extruir' && !pjVista && touches.size === 0
+      && e.button === 0 && (held || (camOn && camReady) || bloqueOn) && tocarCara(e.clientX, e.clientY)) return;
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
     // tocar a alguien de la sala (más cerca que la foto que hay detrás) abre "ir ahí / seguir" (v10.10)
     const h = workHit(e.clientX, e.clientY), q = touches.size === 0 ? salaPersonaEn(e.clientX, e.clientY) : null;
@@ -1922,7 +2059,7 @@ function draw(now) {
 const COLOR_PREVIA = [1, 0.47, 0.31];
 // las agarraderas de recortar / escalar (con el lado que se está moviendo)
 const deco = () => held && held.aim ? null : modoBordes() ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() }
-  : mode === 'extruir' ? { modo: 'extruir' } : null;
+  : mode === 'extruir' ? { modo: 'extruir', cara: caraSel } : null;
 let vacioTexGL = null;
 const texVacio = () => vacioTexGL || (vacioTexGL = texture(VACIO_IMG));
 // en el editor de personaje, las fotos que quedan entre la cámara y el personaje no se dibujan (pedido de José: lo tapaban)

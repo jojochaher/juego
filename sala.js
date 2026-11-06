@@ -139,8 +139,9 @@ setInterval(() => {
 
 // ---------- obras compartidas ----------
 // iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15);
-// so: cuándo se grabó su sonido del lugar (v10.17; el sonido está en imgs/<id>~son); d: la profundidad de una caja (extruir, v10.19)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd'];
+// so: cuándo se grabó su sonido del lugar (v10.17; el sonido está en imgs/<id>~son); d: la profundidad de una caja (extruir, v10.19);
+// cc: qué lleva cada cara de la caja (v10.20)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc'];
 const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
 
 function salaCambioObras(path, data, type) {
@@ -200,7 +201,7 @@ function salaUpsert(id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.d = pose.d; w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.d = pose.d; w.cc = pose.cc; w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
@@ -208,7 +209,7 @@ function salaUpsert(id, pose) {
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
     if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
-    Object.assign(w, soloPose(pose)); w.d = pose.d;     // la profundidad (v10.19): sin d en la base, es plana (Object.assign no la saca)
+    Object.assign(w, soloPose(pose)); w.d = pose.d; w.cc = pose.cc;   // la profundidad y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     return;
@@ -253,7 +254,7 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     if (!w.vacio && !cambiar) return;
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
-    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d;
+    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.cc = ultima.cc;
     w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
     salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
     if (!w.uv) w.uv = FULL.slice();
@@ -466,6 +467,7 @@ function salaHuellaPose(pose) {
   if ('cielo' in pose && !Number.isFinite(pose.cielo)) delete pose.cielo;   // el cielo (v10.15): un número o nada
   if ('so' in pose && !(Number.isFinite(pose.so) && pose.so > 0)) delete pose.so;   // el sonido (v10.17): cuándo se grabó o nada
   if ('d' in pose) { const d = dValida(pose.d); if (d) pose.d = d; else delete pose.d; }   // la profundidad de una caja (v10.19) o nada
+  if ('cc' in pose) { const cc = ccValida(pose.cc); if (cc) pose.cc = cc; else delete pose.cc; }   // qué lleva cada cara (v10.20) o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -608,6 +610,7 @@ function salaEnviarPresencia() {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
     if (L.d) est.m.push(r3(L.d));                     // una caja (v10.19): su profundidad (los de antes leen 15 y la ven plana)
+    const cc = L.d && ccValida(L.cc); if (cc) est.mc = cc;   // y qué lleva cada cara (v10.20)
     if (held) est.mid = held.work.id;
   }
   const s = JSON.stringify(est);
@@ -663,7 +666,7 @@ function salaPersona(id, d) {
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
-    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, mid: d.mid || null };
+    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, cc: ccValida(d.mc), mid: d.mid || null };
     if (!p.mano || p.mano.mid !== t.mid) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };
     p.manoT = t;
     if (salto) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };   // lo que tiene en la mano también salta
@@ -757,8 +760,8 @@ function salaManoDe(id, p, k) {
     if (p.mano) {
       const T = p.manoT, M = p.mano;
       for (let i = 0; i < 3; i++) { M.c[i] += (T.c[i] - M.c[i]) * k; M.r[i] += (T.r[i] - M.r[i]) * k; M.u[i] += (T.u[i] - M.u[i]) * k; }
-      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv; M.d = (M.d || 0) + ((T.d || 0) - (M.d || 0)) * k;
-      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d };
+      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv; M.d = (M.d || 0) + ((T.d || 0) - (M.d || 0)) * k; M.cc = T.cc;
+      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d, cc: M.cc };
       if (M.mid) {
         const w = works.find(x => x.id === M.mid);
         if (w) drawFramed(pose, w.tex, p.col);
