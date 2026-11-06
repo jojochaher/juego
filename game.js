@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.11';
+const VERSION = 'v10.12';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -317,6 +317,8 @@ function addWork(o, img) {
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const w = { id: o.id, c: o.c, r: o.r, u: o.u, w: o.w, h: o.h, uv: (o.uv || FULL).slice(), aspect: o.vacio && o.w > 0 && o.h > 0 ? o.h / o.w : ih / iw,
               tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio, iv: o.iv };
+  if (o.de && typeof o.de === 'object') w.de = o.de;      // quién la puso (sala; ya viene limpio) y cuándo (huellas, v10.12)
+  if (Number.isFinite(o.t0)) w.t0 = o.t0;
   setBuf(w);
   works.push(w);
   return w;
@@ -352,7 +354,8 @@ function uvCentrado(aspecto) {
 function ponerBloque() {
   if (!started || held || !bloqueOn) return;
   const p = previewPose(basis());
-  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: p.c, r: p.r, u: p.u, w: p.w, h: p.h, uv: FULL.slice(), vacio: true };
+  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), c: p.c, r: p.r, u: p.u, w: p.w, h: p.h, uv: FULL.slice(), vacio: true, t0: Date.now() };
+  if (sala.active) o.de = salaDe();
   addWork(o, VACIO_IMG);
   if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
   else store('readwrite', s => s.put({ ...o, blob: null })).catch(() => {});
@@ -788,6 +791,7 @@ function resetHeld() {
 function pick(w) {
   if (held) return;
   held = { work: w, L: null, aim: { t: 0 } };
+  if (w.nueva) salaVista(w);                            // la agarraste: ya la viste (huellas)
   setMode('mover');
   buzz(12);
   ui();
@@ -1030,7 +1034,8 @@ function shoot() {
   const c = document.createElement('canvas');
   c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
   c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose };
+  const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose, t0: Date.now() };
+  if (sala.active) o.de = salaDe();
   addWork(o, c);
   if (sala.active) salaShoot(o, c);
   else c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
@@ -1504,9 +1509,12 @@ startEl.addEventListener('click', async () => {
   ui();
   if (camOn) await startCamera(sala.active && rtc.on && rtc.micOn && !rtc.mic);
   if (sala.active) rtcMedios();   // micrófono y cara recién después de tocar (en iPhone, pedirlos antes falla)
-  showHint(TACTIL ? 'joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla'
-    : 'WASD o flechas para moverte · arrastrá con el mouse para mirar<br>clic en una foto para agarrarla · tecla H: atajos');
+  // si ya llegó el aviso de lo nuevo en la sala (huellas), va debajo; si llega después, se muestra solo
+  const nuevas = sala.avisoNuevas; sala.avisoNuevas = null; bienvenida = Date.now();
+  showHint((TACTIL ? 'joystick para moverte · arrastrá para mirar<br>tocá una foto para agarrarla'
+    : 'WASD o flechas para moverte · arrastrá con el mouse para mirar<br>clic en una foto para agarrarla · tecla H: atajos') + (nuevas ? '<br>' + nuevas : ''));
 });
+let bienvenida = 0;   // cuándo se mostró el cartel del arranque (lo que avise la sala antes, va con él)
 
 // ---------- loop ----------
 let last = performance.now();
@@ -1661,6 +1669,7 @@ function escena(b, dt, yo) {
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
   for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
+  if (!yo) salaNuevasDibujar(b, dt);                     // lo nuevo desde tu última vez brilla (huellas, v10.12)
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
 
   // en la mano (con la grilla prendida, primero las guías en su plano)

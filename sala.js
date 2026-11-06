@@ -54,7 +54,7 @@ function salaClave() {
 }
 
 async function salaEntrar(hash) {
-  if (sala.active) { salaChau(); salaCerrarConexiones(); }
+  if (sala.active) { salaVistasGuardar(); salaChau(); salaCerrarConexiones(); }
   salaDejarDeSeguir('saliste');
   salaLlamar(false, true);
   if (held) releaseHold();
@@ -62,6 +62,7 @@ async function salaEntrar(hash) {
   sala.active = true; sala.hash = hash;
   sala.borradas.clear(); sala.gente.clear(); sala.cargando.clear();
   sala.ultimoEstado = '';
+  salaVistasCargar(hash);
   try { localStorage.setItem('sala', hash); } catch (e) {}
   await sala.chau;                 // si recién saliste, que el "me fui" llegue antes que el "volví"
   if (!sala.active || sala.hash !== hash) return;
@@ -78,6 +79,7 @@ async function salaEntrar(hash) {
 function salaSalir() {
   if (!sala.active) return;
   diag('sala: salgo');
+  salaVistasGuardar();
   salaChau();
   salaCerrarConexiones();
   if (held) releaseHold();
@@ -136,13 +138,16 @@ setInterval(() => {
 }, 10000);
 
 // ---------- obras compartidas ----------
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv'];   // iv: cuándo se cambió la imagen (v10.7)
+// iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0'];
 const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
 
 function salaCambioObras(path, data, type) {
   if (path === '/') {
+    if (type === 'put' && !sala.estadoVisto) salaPrimerEstado(data || {});
     if (type === 'put') {                               // estado completo: sacar lo que ya no está
       const ids = new Set(Object.keys(data || {}));
+      if (sala.idsSala) sala.idsSala.clear();           // lo vuelven a llenar los upserts de abajo
       for (const w of [...works]) if (!ids.has(w.id)) salaQuitarLocal(w.id);
     }
     for (const id in (data || {})) data[id] ? salaUpsert(id, data[id]) : salaQuitarLocal(id);
@@ -159,6 +164,8 @@ function salaCambioObras(path, data, type) {
 
 function salaUpsert(id, pose) {
   if (!pose || !pose.c) return;
+  salaHuellaPose(pose);
+  if (sala.idsSala) sala.idsSala.add(id);
   sala.borradas.delete(id);
   const w = works.find(x => x.id === id);
   if (w) {
@@ -182,7 +189,7 @@ function salaUpsert(id, pose) {
     setBuf(w);
     return;
   }
-  if (pose.vacio) { if (sala.cargando.has(id)) sala.cargando.set(id, pose); else addWork({ id, ...soloPose(pose) }, VACIO_IMG); return; }   // bloque vacío: no hay imagen
+  if (pose.vacio) { if (sala.cargando.has(id)) sala.cargando.set(id, pose); else salaHuella(addWork({ id, ...soloPose(pose) }, VACIO_IMG)); return; }   // bloque vacío: no hay imagen
   if (sala.cargando.has(id)) { sala.cargando.set(id, pose); return; }
   sala.cargando.set(id, pose);
   const hashAlPedir = sala.hash;
@@ -193,12 +200,12 @@ function salaUpsert(id, pose) {
     const ultima = sala.cargando.get(id);
     sala.cargando.delete(id);
     if (!sala.active || sala.hash !== hashAlPedir || sala.borradas.has(id) || works.some(x => x.id === id)) return;
-    addWork({ id, ...soloPose(ultima) }, ultima.vacio ? VACIO_IMG : img);   // mientras bajaba la pudieron vaciar
+    salaHuella(addWork({ id, ...soloPose(ultima) }, ultima.vacio ? VACIO_IMG : img));   // mientras bajaba la pudieron vaciar
   }).catch(() => {
     const ultima = sala.cargando.get(id) || pose;
     sala.cargando.delete(id);
     if (!sala.active || sala.hash !== hashAlPedir || works.some(x => x.id === id) || sala.borradas.has(id)) return;
-    if (ultima.vacio) { addWork({ id, ...soloPose(ultima) }, VACIO_IMG); return; }
+    if (ultima.vacio) { salaHuella(addWork({ id, ...soloPose(ultima) }, VACIO_IMG)); return; }
     setTimeout(() => { if (sala.active && sala.hash === hashAlPedir && !works.some(x => x.id === id) && !sala.borradas.has(id)) salaUpsert(id, ultima); }, 1500);
   });
 }
@@ -241,6 +248,8 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
 
 function salaQuitarLocal(id) {
   sala.borradas.add(id);
+  if (sala.idsSala) sala.idsSala.delete(id);
+  if (sala.pendientes) sala.pendientes.delete(id);
   sala.cargando.delete(id);
   const w = works.find(x => x.id === id);
   if (!w) return;
@@ -312,6 +321,132 @@ function salaVaciar(w) {
 function salaRemove(w) {
   sala.borradas.add(w.id);
   salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {});
+}
+
+// ---------- huellas (propuesta 2, parte 1, v10.12): quién puso cada foto y lo nuevo desde tu última vez ----------
+// Cada foto o bloque nuevo lleva en su pose `de` = {id, col, cu?, ca?, fa?} (quién lo puso: su color y su forma de
+// personaje) y `t0` (cuándo, en su reloj). El celu recuerda qué fotos viste de cada sala (localStorage 'vistas');
+// al volver, las que no viste brillan suave en el color de quien las puso hasta que las mirás un rato (o las agarrás),
+// y al entrar se avisa "desde tu última vez: N fotos nuevas". La primera vez en una sala no brilla nada (no se sabe
+// qué viste). Las que llegan mientras estás también brillan (las tuyas no).
+// Lo que se guarda: todas las fotos que hay en la sala (sala.idsSala, lo que dice la base, aunque su imagen no baje)
+// menos las que brillan sin haberlas mirado (sala.pendientes). Una que no se puede ver (rota, sin imagen) no queda
+// pendiente: si no, avisaría en cada visita.
+const SALA_VISTAS_MAX = 30;                            // salas que se recuerdan
+const SALA_NUEVA_MIRAR = 3, SALA_NUEVA_APAGAR = 1.5;   // segundos mirándola hasta que se apaga, y cuánto tarda en apagarse
+function salaDe() {
+  const d = { id: salaYo, col: salaColor.map(v => Math.round(v * 100) / 100) };
+  pjPresencia(d);
+  return d;
+}
+const salaEsMia = o => !!(o && o.de && o.de.id === salaYo);
+// el color de quien la puso, si es válido (llega por la red: puede venir cualquier cosa)
+const salaColDe = de => de && Array.isArray(de.col) && de.col.length === 3 && de.col.every(v => Number.isFinite(v) && v >= 0 && v <= 1) ? de.col : null;
+// de lo que llega por la red, solo lo que se entiende (así tampoco se reenvía basura al moverla)
+function salaDeLimpio(de) {
+  if (!de || typeof de !== 'object' || typeof de.id !== 'string' || de.id.length > 40) return undefined;
+  const d = { id: de.id };
+  const col = salaColDe(de);
+  if (col) d.col = col.slice();
+  if (de.cu === 1) d.cu = 1;
+  if (de.ca === 1) d.ca = 1;
+  if (Number.isFinite(de.fa)) d.fa = Math.min(2, Math.max(0.5, de.fa));
+  return d;
+}
+// limpia de y t0 de una pose que llegó (si vienen rotos se sacan: lo que ya tenía la foto se queda)
+function salaHuellaPose(pose) {
+  if ('de' in pose) { const d = salaDeLimpio(pose.de); if (d) pose.de = d; else delete pose.de; }
+  if ('t0' in pose && !Number.isFinite(pose.t0)) delete pose.t0;
+}
+function salaVistasLeer() {
+  try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
+}
+function salaVistasCargar(hash) {
+  const e = salaVistasLeer()[hash];
+  sala.conocidas = e && Array.isArray(e.ids) ? new Set(e.ids.filter(x => typeof x === 'string')) : null;   // null: primera vez acá
+  sala.estadoVisto = false;   // hasta que llega el primer estado completo no se sabe qué hay (y no se guarda nada)
+  sala.idsSala = new Set();
+  sala.pendientes = new Set();
+  sala.vistasTxt = '';
+  sala.avisoNuevas = null;
+}
+function salaVistasGuardar() {
+  if (!sala.active || !sala.hash || !sala.estadoVisto) return;
+  const ids = [...sala.idsSala].filter(id => !sala.pendientes.has(id)).sort();
+  const txt = ids.join(',');
+  if (txt === sala.vistasTxt) return;
+  sala.vistasTxt = txt;
+  const o = salaVistasLeer();
+  o[sala.hash] = { t: Date.now(), ids };
+  for (const h of Object.keys(o).sort((a, b) => ((o[b] && o[b].t) || 0) - ((o[a] && o[a].t) || 0)).slice(SALA_VISTAS_MAX)) delete o[h];
+  try { localStorage.setItem('vistas', JSON.stringify(o)); } catch (e) {}
+}
+setInterval(salaVistasGuardar, 4000);
+function salaPrimerEstado(data) {
+  sala.estadoVisto = true;
+  const ids = Object.keys(data).filter(id => data[id] && data[id].c);
+  if (!sala.conocidas) { sala.conocidas = new Set(ids); return; }   // primera vez en esta sala: lo que hay cuenta como visto
+  const nuevas = ids.filter(id => !sala.conocidas.has(id) && !salaEsMia(data[id]));
+  if (!nuevas.length) return;
+  const cols = [];
+  for (const id of nuevas) {
+    const c = salaColDe(data[id].de);
+    if (c && !cols.some(x => x.every((v, i) => Math.abs(v - c[i]) < 0.02))) cols.push(c);
+  }
+  const pts = cols.slice(0, 6).map(c => `<span style="color:${salaRgb(c)}">●</span>`).join(' ');
+  const txt = `desde tu última vez: ${nuevas.length === 1 ? '1 foto nueva' : nuevas.length + ' fotos nuevas'}${pts ? ' de ' + pts : ''} · brillan hasta que las mirás`;
+  diag('sala: ' + nuevas.length + ' fotos nuevas desde la última vez');
+  if (!bienvenida) sala.avisoNuevas = txt;                             // antes de tocar "entrar": va con el cartel del arranque
+  else if (Date.now() - bienvenida < 5000) showHint(hint.innerHTML + '<br>' + txt);   // recién arrancó: debajo del cartel
+  else showHint(txt);
+}
+// una foto que llega a la sala: si no la habías visto (y no es tuya), brilla
+function salaHuella(w) {
+  if (!w || w.rota || !sala.conocidas || sala.conocidas.has(w.id) || salaEsMia(w)) return;
+  w.nueva = { visto: 0, tap: false, tapT: 0 };
+  sala.pendientes.add(w.id);
+}
+// ya la viste (la miraste un rato o la agarraste)
+function salaVista(w) {
+  w.nueva = null;
+  if (sala.pendientes) sala.pendientes.delete(w.id);
+}
+// el brillo: seis marcos suaves detrás de la foto, en el color de quien la puso, que laten despacio.
+// Mirarla (delante, en el cuadro, a menos de 8 m y sin nada en el medio) SALA_NUEVA_MIRAR segundos la apaga.
+// Solo cuenta con el juego arrancado y sin el editor de personaje (la pantalla de "entrar" tapa todo).
+function salaNuevasDibujar(b, dt) {
+  if (!sala.active || !sala.pendientes || !sala.pendientes.size) return;
+  const [tx, ty] = tans(), otros = salaEnManos(), tt = Date.now() / 1000;
+  const cuenta = started && !pjVista;
+  let ws = null;                                         // las que tapan (se calcula una vez por cuadro, si hace falta)
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  try {
+    for (const w of works) {
+      const nv = w.nueva;
+      if (!nv || w.rota || (held && held.work === w) || otros.has(w.id)) continue;
+      const v = sub(w.c, pos), d = len(v), z = dot(v, b.f);
+      if (d < 0.05) continue;
+      const x = Math.abs(dot(v, b.r)), y = Math.abs(dot(v, b.u)), lado = Math.max(w.w, w.h);
+      if (z + lado < 0 || x > Math.max(z, 0) * tx + lado || y > Math.max(z, 0) * ty + lado) continue;   // fuera del cuadro: ni se mira ni se dibuja
+      if (cuenta && z > 0.2 && d < 8 && x < z * tx * 0.9 && y < z * ty * 0.9) {
+        nv.tapT -= dt;
+        if (nv.tapT <= 0) {                              // si hay algo en el medio, se mira cada 1/4 s (con muchas fotos es caro)
+          nv.tapT = 0.25;
+          nv.tap = tapado(pos, sub(w.c, mul(v, 0.05 / d)), ws || (ws = solidas()));
+        }
+        if (!nv.tap) nv.visto += dt;
+      }
+      const k = nv.visto < SALA_NUEVA_MIRAR ? 1 : 1 - (nv.visto - SALA_NUEVA_MIRAR) / SALA_NUEVA_APAGAR;
+      if (k <= 0) { salaVista(w); continue; }
+      const col = salaColDe(w.de) || [1, 1, 1];
+      const a = 0.12 * k * (0.7 + 0.3 * Math.sin(tt * 3));
+      let n = norm(cross(w.r, w.u));
+      if (dot(n, v) < 0) n = mul(n, -1);                 // hacia atrás de la foto: la foto tapa el centro, se ve el borde
+      const atras = add(w.c, mul(n, 0.006 * d)), px = metersPerPx(d);
+      for (const g of [4, 8, 12, 16, 20, 25]) drawQuad(scratch, quadData(atras, w.r, w.u, w.w + 2 * g * px, w.h + 2 * g * px), white, col, a);
+    }
+  } finally { gl.depthMask(true); gl.disable(gl.BLEND); }
 }
 
 // ---------- gente en la sala ----------
@@ -403,9 +538,9 @@ function salaChau() {
   if (sala.active && sala.hash) sala.chau = salaApi('gente/' + salaYo, 'DELETE', undefined, { keepalive: true }).catch(() => {});
   sala.ultimoEstado = '';
 }
-window.addEventListener('pagehide', salaChau);
+window.addEventListener('pagehide', () => { salaVistasGuardar(); salaChau(); });
 window.addEventListener('pageshow', e => { if (e.persisted) salaReconectar(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) salaChau(); else salaReconectar(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { salaVistasGuardar(); salaChau(); } else salaReconectar(); });
 
 // ---------- dibujar a los demás: personaje palito ----------
 let salaDiscTex = null;
