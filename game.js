@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.15';
+const VERSION = 'v10.16';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -885,7 +885,8 @@ function drop() {
   Object.assign(w, heldPose(basis(), true));
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
-  if (relleno) w.imgN = (w.imgN || 0) + 1;               // museo: si la cambiás otra vez antes de que se guarde, gana la última
+  // museo: si la cambiás otra vez antes de que se guarde, gana la última. Otra imagen (o vacía): el sonido era del lugar de la vieja
+  if (relleno) { w.imgN = (w.imgN || 0) + 1; w.son = null; }
   const imgN = w.imgN;
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
@@ -895,14 +896,14 @@ function drop() {
     if (relleno && relleno.vaciar) salaVaciar(w);
     else relleno ? salaShoot({ id: w.id, ...pose }, relleno.c, w) : salaSavePose(w);
   } else if (relleno && relleno.vaciar) {
-    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose, blob: null, vacio: true }); }).catch(() => {});
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose, blob: null, vacio: true, son: null }); }).catch(() => {});
   } else {
     store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...pose }); }).catch(() => {});
     // el bloque lleno: la imagen se agrega al registro que haya (si mientras tanto lo borraste, no lo revive)
     if (relleno) relleno.c.toBlob(blob => {
       if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
       if (w.imgN !== imgN) return;   // mientras tanto la vaciaste o la cambiaste
-      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false }); }).catch(() => {});
+      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false, son: null }); }).catch(() => {});
     }, 'image/jpeg', 0.85);
   }
   buzz(12);
@@ -1072,7 +1073,7 @@ async function loadWorks() {
     const img = new Image(); img.src = url;
     try {
       await Promise.race([img.decode(), new Promise((_, rej) => setTimeout(() => rej(new Error('tardó')), 5000))]);
-      if (!sala.active) addWork(o, img);
+      if (!sala.active) { const w = addWork(o, img); if (o.son instanceof Blob && o.son.size) sonCopia(w, o.son); }
     } catch (e) { diag('museo: no pude abrir una foto (' + e.message + ')'); }
     img.src = ''; URL.revokeObjectURL(url);
     await new Promise(r => setTimeout(r, 0));
@@ -1175,9 +1176,17 @@ function shoot() {
   c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
   const o = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 6), ...pose, t0: Date.now() };
   if (sala.active) o.de = salaDe();
-  addWork(o, c);
+  const w = addWork(o, c);
   if (sala.active) salaShoot(o, c);
-  else c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
+  else {
+    c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
+    // el sonido del lugar (v10.16): 4 s desde que la sacaste; se pega a la foto si sigue siendo la misma imagen
+    sonGrabar(o.id, sb => {
+      if (!sb || !works.includes(w) || w.vacio || w.relleno || w.imgN) return;
+      w.son = sb;
+      store('readwrite', s => { const q = s.get(o.id); q.onsuccess = () => q.result && q.result.blob && !q.result.vacio && s.put({ ...q.result, son: sb }); }).catch(() => {});
+    });
+  }
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
@@ -1325,6 +1334,8 @@ $('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWid
 $('vaciarFoto').addEventListener('click', vaciarFoto);
 $('cieloFoto').addEventListener('click', usarDeCielo);
 $('opcCielo').addEventListener('click', bajarCielo);
+$('opcSonido').addEventListener('click', sonAlternar);
+sonPintar();
 $('bloqueArchivo').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
   if (!f) return;
@@ -1778,6 +1789,7 @@ function draw(now) {
     } finally { pos[0] = yo[0]; pos[1] = yo[1]; pos[2] = yo[2]; FOVX = fovTuyo; }
   } else escena(b, dt, null);
   salaLejos(b);   // las caritas del borde (los de la sala que no se ven)
+  sonPaso(b);     // el sonido del lugar de las fotos cercanas (v10.16)
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
@@ -1915,7 +1927,7 @@ async function checkUpdate() {
     const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
     const mm = (await r.text()).match(/const VERSION = '([^']+)'/);
     // no recargar con dedos en pantalla, una foto en la mano, ni escribiendo un comentario o la cuenta (se perdería)
-    const ocupado = escribiendo() || ['comPanel', 'cuentaPanel'].some(id => $(id).style.display !== 'none') || comMandando;
+    const ocupado = escribiendo() || ['comPanel', 'cuentaPanel'].some(id => $(id).style.display !== 'none') || comMandando || son.grabando;
     if (mm && mm[1] !== VERSION && touches.size === 0 && !held && !ocupado) {
       if (sessionStorage.getItem('recargado') === mm[1]) return;
       sessionStorage.setItem('recargado', mm[1]);
@@ -1943,6 +1955,6 @@ window.__game = {
   pos, works, joy,
   get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get previewBloque() { return previewBloque; }, get bloqueOn() { return bloqueOn; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
-  get gyroMode() { return gyroMode; }, get cielo() { return cieloW; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, atm, texCol, snapPose, stableGrilla,
+  get gyroMode() { return gyroMode; }, son, get cielo() { return cieloW; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, atm, texCol, snapPose, stableGrilla,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };
