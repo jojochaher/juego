@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.14';
+const VERSION = 'v10.15';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -149,6 +149,35 @@ void main() {
   gl_FragColor = vec4(vec3(1.0), a * 0.5);
 }`);
 const DP = { p: gl.getAttribLocation(dotProg, 'p'), m: gl.getUniformLocation(dotProg, 'm'), eye: gl.getUniformLocation(dotProg, 'eye') };
+// el cielo (v10.15): un cuadro que tapa toda la pantalla; cada pixel calcula hacia dónde mira (rumbo y altura)
+// y de ahí qué parte de la foto le toca. map = [copias alrededor, altura del borde de abajo, alto en radianes, espejar]
+const cieloProg = program(`
+attribute vec2 p; uniform vec3 cr; uniform vec3 cu; uniform vec3 cf; uniform vec2 ct; varying vec3 dir;
+void main() { dir = cf + cr * (p.x * ct.x) + cu * (p.y * ct.y); gl_Position = vec4(p, 0.0, 1.0); }`, `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D t; uniform vec4 uvw; uniform vec4 map; uniform vec3 medio; uniform vec3 abajo; uniform float brillo; varying vec3 dir;
+void main() {
+  vec3 d = normalize(dir);
+  float el = asin(clamp(d.y, -1.0, 1.0));
+  float x = (atan(d.x, -d.z) / 6.2831853 + 0.5) * map.x;
+  float k = floor(x), fx = x - k;
+  if (map.w > 0.5 && mod(k, 2.0) > 0.5) fx = 1.0 - fx;     // copias espejadas: no se ven costuras
+  float y = (el - map.y) / map.z;                           // 0 = borde de abajo de la foto, 1 = el de arriba
+  vec3 c = texture2D(t, vec2(mix(uvw.x, uvw.z, fx), mix(uvw.w, uvw.y, clamp(y, 0.0, 1.0)))).rgb;
+  c = mix(c, medio, smoothstep(0.0, 0.45, (y - 1.0) * map.z));   // arriba de la foto, hacia el color promedio
+  c *= brillo;
+  c = mix(c, abajo, smoothstep(0.0, 0.35, -y * map.z));          // abajo de la foto, hacia el fondo
+  gl_FragColor = vec4(c, 1.0);
+}`);
+const CP = Object.fromEntries(['cr', 'cu', 'cf', 'ct', 'uvw', 'map', 'medio', 'abajo', 'brillo'].map(k => [k, gl.getUniformLocation(cieloProg, k)]));
+CP.p = gl.getAttribLocation(cieloProg, 'p');
+const cieloBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cieloBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
 const GRID = 12;
 const dotBuf = gl.createBuffer();
 const dotData = new Float32Array((GRID * 2 + 1) ** 2 * 3);
@@ -340,6 +369,7 @@ function addWork(o, img) {
               tex: texture(small(img)), buf: gl.createBuffer(), rota: !!rota, vacio: !!o.vacio, iv: o.iv };
   if (o.de && typeof o.de === 'object') w.de = o.de;      // quién la puso (sala; ya viene limpio) y cuándo (huellas, v10.12)
   if (Number.isFinite(o.t0)) w.t0 = o.t0;
+  if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   setBuf(w);
   works.push(w);
   return w;
@@ -471,7 +501,7 @@ const CUERPO = 0.22, ESCALON = 0.4, GRAVEDAD = 9.8;
 let velY = 0;
 function solidas() {
   const otros = salaEnManos();
-  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id) && !w.rota);
+  return works.filter(w => (!held || w !== held.work) && !otros.has(w.id) && !w.rota && w !== cieloW);   // la del cielo no está en su lugar
 }
 const normal = w => norm(cross(w.r, w.u));
 let posBuena = [0, EYE, 0];
@@ -891,6 +921,91 @@ function trash() {
   releaseHold();
 }
 
+// ---------- el cielo (v10.15, propuesta 3 de José, parte 2) ----------
+// "usar de cielo" con una foto en la mano: la foto sube al cielo y lo envuelve todo (deja de estar en su lugar: no se
+// dibuja ahí, no choca, no se agarra). "bajar el cielo" (☰) la devuelve a donde estaba. Se guarda en la pose de la foto:
+// cielo = cuándo se subió (en el reloj de quien lo hizo); negativo = cuándo se bajó. Vale lo último que se hizo (el
+// mayor |cielo|): si es positivo, esa foto es el cielo. En la sala va en la pose (lo ven todos; no sube ni baja ninguna
+// imagen nueva: la foto ya estaba). Al subir una, las otras que estaban arriba se bajan (si no, al borrar la nueva
+// volvería la vieja). Sin cielo queda la atmósfera de v10.14.
+let cieloW = null;
+function cieloObra() {
+  let best = null, bt = 0;
+  for (const w of works) if (Number.isFinite(w.cielo) && Math.abs(w.cielo) > bt) { bt = Math.abs(w.cielo); best = w; }
+  return best && best.cielo > 0 && !best.rota && !best.vacio ? best : null;
+}
+// en la sala, solo una foto que ya está en la base (si todavía sube, su pose no existe) y sin un cambio de imagen a medias
+const puedeCielo = w => !!w && !w.vacio && !w.rota && !w.relleno && !w.subiendo && w !== cieloW &&
+  (!sala.active || !!(sala.idsSala && sala.idsSala.has(w.id)));
+function cieloGuardar(w, v) {
+  w.cielo = v;
+  if (sala.active) salaCielo(w);
+  else store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, cielo: v }); }).catch(() => {});
+}
+// cuándo, para el cielo: ahora, pero siempre después de lo último que se hizo (si un celu con el reloj adelantado
+// subió una foto al cielo, con Date.now() lo mío quedaría "antes" y no pasaría nada)
+function cieloAhora() {
+  let m = 0;
+  for (const w of works) if (Number.isFinite(w.cielo)) m = Math.max(m, Math.abs(w.cielo));
+  return Math.max(Date.now(), m + 1);
+}
+function usarDeCielo() {
+  if (!held || !puedeCielo(held.work)) return;
+  const w = held.work, t = cieloAhora();
+  for (const o of works) if (o !== w && o.cielo > 0) cieloGuardar(o, -o.cielo);   // la que estaba arriba vuelve a su lugar
+  cieloGuardar(w, t);
+  releaseHold();                                         // sin ✓: si la habías movido, al bajarla vuelve a donde estaba
+  cieloW = cieloObra();
+  buzz(15);
+  showHint((sala.active ? 'ahora es el cielo de la sala (lo ven todos)' : 'ahora es el cielo') + '<br>para bajarla: ☰ → bajar el cielo');
+}
+// "usar de cielo" (con una foto en la mano) y "bajar el cielo" (☰): se miran en cada cuadro, porque en la sala
+// cambian solos (la foto termina de subir, otro cambia el cielo); solo se toca el DOM si cambió
+let cieloBtns = '';
+function cieloBotones() {
+  const k = (started && held && !pjVista && puedeCielo(held.work) ? 1 : 0) + ',' + (cieloObra() ? 1 : 0);
+  if (k === cieloBtns) return;
+  cieloBtns = k;
+  $('cieloFoto').style.display = k[0] === '1' ? '' : 'none';
+  $('opcCielo').style.display = k[2] === '1' ? '' : 'none';
+}
+function bajarCielo() {
+  const w = cieloObra();
+  if (!w) return;
+  const t = cieloAhora();
+  for (const o of works) if (o !== w && o.cielo > 0) cieloGuardar(o, -o.cielo);   // si quedó otra arriba (dos a la vez), también baja
+  cieloGuardar(w, -t);
+  cieloW = cieloObra();
+  buzz(12);
+  showHint('la foto del cielo volvió a donde estaba');
+  ui();
+}
+// cómo se envuelve: una panorámica entera (2:1) da la vuelta y va de abajo hasta arriba; una más ancha da la vuelta con
+// el horizonte en el medio; una foto común se repite alrededor (espejada, para que no se vean costuras) desde un poco
+// abajo del horizonte hasta bien arriba, y más arriba se funde en su color promedio
+function cieloMapa(w) {
+  const A = w.w / w.h;
+  if (A >= 1.8 && A <= 2.2) return [1, -Math.PI / 2, Math.PI, 0];
+  if (A > 2.2) { const V = 2 * Math.PI / A; return [1, -V / 2, V, 0]; }
+  const V = 75 * Math.PI / 180;
+  return [2 * Math.max(1, Math.round(2 * Math.PI / (V * A) / 2)), -12 * Math.PI / 180, V, 1];
+}
+const CIELO_BRILLO = 0.8, CIELO_NIEBLA = 0.6;   // un poco más oscuro que la foto (las del museo tienen que resaltar)
+function cieloDibujar(b, w) {
+  const [tx, ty] = tans(), uv = w.uv || FULL;
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(cieloProg);
+  gl.uniform3fv(CP.cr, b.r); gl.uniform3fv(CP.cu, b.u); gl.uniform3fv(CP.cf, b.f); gl.uniform2fv(CP.ct, [tx, ty]);
+  gl.uniform4fv(CP.uvw, uv); gl.uniform4fv(CP.map, cieloMapa(w));
+  gl.uniform3fv(CP.medio, texCol.get(w.tex) || [0.5, 0.5, 0.5]); gl.uniform3fv(CP.abajo, atm); gl.uniform1f(CP.brillo, CIELO_BRILLO);
+  gl.bindTexture(gl.TEXTURE_2D, w.tex);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cieloBuf);
+  gl.enableVertexAttribArray(CP.p); gl.vertexAttribPointer(CP.p, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disableVertexAttribArray(CP.p);
+  gl.depthMask(true);
+}
+
 // el rayo que sale de la cámara por el punto (x, y) de la pantalla
 function rayoEn(x, y) {
   const b = basis();
@@ -903,6 +1018,7 @@ function workHit(x, y) {
   const d = rayoEn(x, y);
   let best = null, bestT = Infinity;
   for (const w of works) {
+    if (w === cieloW) continue;                         // está en el cielo: no se agarra (se baja desde ☰)
     const n = cross(w.r, w.u);
     const den = dot(d, n);
     if (Math.abs(den) < 1e-6) continue;
@@ -1146,6 +1262,7 @@ function ui() {
   const vacio = holding && held.work.vacio;
   // con el bloque equipado (cámara guardada), "cámara" la abre para sacarle la foto; ya abierta, "sacar foto"
   show($('llenarFoto'), vacio); show($('vaciarFoto'), holding && !held.work.vacio);
+  cieloBotones();
   if (vacio) $('llenarFoto').textContent = camUp ? 'sacar foto' : camOn ? 'abriendo…' : 'cámara';
   $('girarCam').classList.toggle('ocupado', camStarting);
   show(dropBtn, started && holding);
@@ -1206,6 +1323,8 @@ $('guardarBloque').addEventListener('click', () => setBloque(false));
 $('camChica').addEventListener('click', () => setCam(true));
 $('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); else if (!camOn) setCam(true); });
 $('vaciarFoto').addEventListener('click', vaciarFoto);
+$('cieloFoto').addEventListener('click', usarDeCielo);
+$('opcCielo').addEventListener('click', bajarCielo);
 $('bloqueArchivo').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
   if (!f) return;
@@ -1610,6 +1729,8 @@ function pantallaOk(now) {
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  cieloW = cieloObra();                                  // la foto que es el cielo (si hay): una vez por cuadro
+  cieloBotones();
   if (held && held.aim) stepAim(dt);
   const b = basis();
 
@@ -1689,10 +1810,11 @@ const NIEBLA = [12, 50, 0.85];   // empieza a 12 m, llega a 50 m, y como mucho t
 const atm = ATM_BASE.slice();
 let atmPrimera = true;
 function atmosferaMeta(eye) {
+  if (cieloW) { const c = texCol.get(cieloW.tex); if (c) return c.map(x => clamp(x * CIELO_BRILLO * CIELO_NIEBLA, 0, 1)); }   // con cielo: la niebla y el fondo de abajo, de su color
   const s = [0, 0, 0];
   let sw = 0;
   for (const w of works) {
-    if (w.rota || w.vacio) continue;
+    if (w.rota || w.vacio || w === cieloW) continue;
     const col = texCol.get(w.tex);
     if (!col) continue;
     const d = Math.hypot(w.c[0] - eye[0], w.c[1] - eye[1], w.c[2] - eye[2]);
@@ -1719,6 +1841,7 @@ function escena(b, dt, yo) {
   atmosfera(dt);
   gl.clearColor(atm[0], atm[1], atm[2], 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (cieloW) cieloDibujar(b, cieloW);                   // el cielo, detrás de todo
   const m = matrix(b);
 
   // obras
@@ -1727,7 +1850,7 @@ function escena(b, dt, yo) {
   gl.uniformMatrix4fv(Q.m, false, m);
   gl.uniform3fv(Q.eye, pos); gl.uniform3fv(Q.niebla, atm); gl.uniform3fv(Q.nieblaD, NIEBLA);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
-  for (const w of works) if ((!held || w !== held.work) && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
+  for (const w of works) if ((!held || w !== held.work) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawQuad(w.buf, null, w.tex, [1, 1, 1]);
   salaDraw(b, dt);
   if (!yo) salaNuevasDibujar(b, dt);                     // lo nuevo desde tu última vez brilla (huellas, v10.12)
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
@@ -1820,6 +1943,6 @@ window.__game = {
   pos, works, joy,
   get held() { return held; }, sala, salaYo, rtc, get camOn() { return camOn; }, get fov() { return fovDeg; }, get preview() { return preview; }, get previewBloque() { return previewBloque; }, get bloqueOn() { return bloqueOn; }, get mode() { return mode; },
   get invertLook() { return invertLook; }, get gyroOn() { return gyroOn; },
-  get gyroMode() { return gyroMode; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, atm, texCol, snapPose, stableGrilla,
+  get gyroMode() { return gyroMode; }, get cielo() { return cieloW; }, get camReady() { return camReady; }, get grilla() { return grilla; }, get pasoGrilla() { return pasoGrilla; }, atm, texCol, snapPose, stableGrilla,
   look(y, p) { yawOff = -y * Math.PI / 180; pitchOff = p * Math.PI / 180; },
 };

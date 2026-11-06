@@ -138,8 +138,8 @@ setInterval(() => {
 }, 10000);
 
 // ---------- obras compartidas ----------
-// iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0'];
+// iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo'];
 const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
 
 function salaCambioObras(path, data, type) {
@@ -155,8 +155,20 @@ function salaCambioObras(path, data, type) {
   }
   const parts = path.split('/').filter(Boolean);
   const id = parts[0];
+  if (parts.length === 2 && parts[1] === 'cielo') {   // el cielo (v10.15) se escribe solo: se aplica directo, sin pedir la pose
+    const v = Number.isFinite(data) ? data : undefined;
+    const w = works.find(x => x.id === id);
+    if (w) w.cielo = v;
+    const p = sala.cargando.get(id);                    // si todavía baja su imagen, que llegue con el cielo de ahora
+    if (p && typeof p === 'object') { if (v === undefined) delete p.cielo; else p.cielo = v; }
+    return;
+  }
   if (parts.length > 1) {                               // cambió un campo suelto: pedir la pose entera
-    fetch(salaUrl('poses/' + id)).then(r => r.json()).then(p => p ? salaUpsert(id, p) : salaQuitarLocal(id)).catch(() => {});
+    const hashAlPedir = sala.hash;
+    fetch(salaUrl('poses/' + id)).then(r => r.json()).then(p => {
+      if (!sala.active || sala.hash !== hashAlPedir) return;   // mientras volvía te cambiaste de sala
+      p ? salaUpsert(id, p) : salaQuitarLocal(id);
+    }).catch(() => {});
     return;
   }
   data ? salaUpsert(id, data) : salaQuitarLocal(id);
@@ -169,6 +181,7 @@ function salaUpsert(id, pose) {
   sala.borradas.delete(id);
   const w = works.find(x => x.id === id);
   if (w) {
+    w.cielo = pose.cielo;                               // el cielo vale siempre lo de la base (también si la tengo en la mano)
     if (held && held.work === w) {                      // la estoy editando yo: gana la pose mía al soltar
       // pero si otro le cambió la imagen (la llenó, la cambió o la vació), se anota: al soltar se respeta (salvo que la hayas cambiado vos)
       const vacioAntes = w.relleno ? w.relleno.vacioViejo : w.vacio;
@@ -318,6 +331,11 @@ function salaVaciar(w) {
     return salaApi('poses/' + w.id, 'PUT', p).then(() => salaApi('imgs/' + w.id, 'DELETE'));
   }).catch(() => showHint('no se pudo vaciar en la sala'));
 }
+// el cielo (v10.15): solo el campo, así no pisa lo que otro esté moviendo. Si la foto ya no está en la base, las reglas
+// no lo dejan crear (una pose necesita c, r, u, w, h): no queda una pose a medias
+function salaCielo(w) {
+  salaApi('poses/' + w.id + '/cielo', 'PUT', w.cielo).catch(() => showHint('no se pudo cambiar el cielo de la sala'));
+}
 function salaRemove(w) {
   sala.borradas.add(w.id);
   salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {});
@@ -357,6 +375,7 @@ function salaDeLimpio(de) {
 function salaHuellaPose(pose) {
   if ('de' in pose) { const d = salaDeLimpio(pose.de); if (d) pose.de = d; else delete pose.de; }
   if ('t0' in pose && !Number.isFinite(pose.t0)) delete pose.t0;
+  if ('cielo' in pose && !Number.isFinite(pose.cielo)) delete pose.cielo;   // el cielo (v10.15): un número o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -452,6 +471,7 @@ function salaNuevasDibujar(b, dt) {
   try {
     for (const w of works) {
       const nv = w.nueva;
+      if (nv && w === cieloW) { if (cuenta) salaVista(w); continue; }   // es el cielo: se ve desde todos lados (ya jugando)
       if (!nv || w.rota || (held && held.work === w) || otros.has(w.id)) continue;
       const v = sub(w.c, pos), d = len(v), z = dot(v, b.f);
       if (d < 0.05) continue;
