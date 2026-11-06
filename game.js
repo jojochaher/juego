@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.12';
+const VERSION = 'v10.13';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -792,6 +792,8 @@ function pick(w) {
   if (held) return;
   held = { work: w, L: null, aim: { t: 0 } };
   if (w.nueva) salaVista(w);                            // la agarraste: ya la viste (huellas)
+  const huella = salaHuellaTxt(w);                      // quién la puso y cuándo (huellas, parte 2)
+  if (huella) showHint(huella);
   setMode('mover');
   buzz(12);
   ui();

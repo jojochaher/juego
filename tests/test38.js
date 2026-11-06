@@ -88,6 +88,9 @@ const DB = 'http://localhost:8382';
   await B.evaluate(id => pick(__game.works.find(x => x.id === id)), f2);
   await B.waitForTimeout(1200);
   ok('B: agarrarla la da por vista', (await nueva(B, f2)) === false);
+  // huellas parte 2 (v10.13): al agarrarla dice quién la puso y cuándo
+  const hB = await B.evaluate(() => ({ t: document.getElementById('hint').textContent, c: (document.querySelector('#hint span') || {}).style && getComputedStyle(document.querySelector('#hint span')).color }));
+  ok('B: al agarrarla "la puso ● (está en la sala) · recién" (' + hB.t + ')', hB.t === 'la puso ● (está en la sala) · recién' && hB.c === `rgb(${colA.map(v => Math.round(v * 255)).join(', ')})`);
   ok('B: mientras tanto las otras siguen brillando', await B.evaluate(ids => ids.every(id => __game.works.find(x => x.id === id).nueva), [f3, bq, 'viejo1']));
   await B.evaluate(() => { releaseHold(); __game.look(0, 75); });   // agarrar giró la vista hacia las otras: que no las mire
   // una sin imagen (no baja nunca) y una rota: no quedan pendientes (si no, avisarían en cada visita)
@@ -124,6 +127,29 @@ const DB = 'http://localhost:8382';
   await B.evaluate(() => { __game.pos[0] = -5; __game.pos[2] = 7; __game.look(0, 0); });
   await B.waitForTimeout(600);
 
+  // huellas parte 2: una vieja (sin de ni t0) no dice nada; una de alguien que no está, hace cuánto; la tuya vieja, "la pusiste vos"
+  await B.evaluate(() => showHint('nada'));
+  await B.evaluate(() => pick(__game.works.find(x => x.id === 'viejo1')));
+  await B.waitForTimeout(300);
+  ok('B: agarrar una foto sin de ni t0 no dice nada', (await B.textContent('#hint')) === 'nada');
+  await B.evaluate(() => releaseHold());
+  await fetch(`${DB}/salas/${H}/poses/antigua1.json`, { method: 'PUT', body: JSON.stringify({ c: [-5, 1.5, -5], r: [1, 0, 0], u: [0, 1, 0], w: 1, h: 1, vacio: true, de: { id: 'otroqueno', col: [1, 0, 0] }, t0: Date.now() - 3 * 86400000 - 60000 }) });
+  await espera(B, () => __game.works.some(x => x.id === 'antigua1'), null, 5000);
+  await B.evaluate(() => pick(__game.works.find(x => x.id === 'antigua1')));
+  await B.waitForTimeout(300);
+  ok('B: "la puso ● · hace 3 días" (' + await B.textContent('#hint') + ')', (await B.textContent('#hint')) === 'la puso ● · hace 3 días');
+  await B.evaluate(() => releaseHold());
+  await A.evaluate(() => showHint('nada'));
+  await A.evaluate(id => pick(__game.works.find(x => x.id === id)), f3);
+  await A.waitForTimeout(300);
+  ok('A: agarrar la suya recién puesta no dice nada', (await A.textContent('#hint')) === 'nada');
+  await A.evaluate(id => { releaseHold(); const w = __game.works.find(x => x.id === id); w.t0 = Date.now() - 2 * 3600000 - 60000; pick(w); }, f3);
+  await A.waitForTimeout(300);
+  ok('A: la suya de hace 2 h: "la pusiste vos · hace 2 horas"', (await A.textContent('#hint')) === 'la pusiste vos · hace 2 horas');
+  await A.evaluate(() => releaseHold());
+  const haces = await A.evaluate(() => [0, 5, 61, 25 * 60, 47 * 60, 10 * 1440, 90 * 1440, 900 * 1440, -30].map(m => salaHaceTxt(Date.now() - m * 60000)));
+  ok('hace cuánto: ' + haces.join(' / '), JSON.stringify(haces) === JSON.stringify(['recién', 'hace 5 min', 'hace 1 hora', 'ayer', 'ayer', 'hace 10 días', 'hace 3 meses', 'hace más de dos años', 'recién']));
+
   // la primera vez en una sala no brilla nada
   const C = await mk(); await C.evaluate(() => showHint('nada')); await entrar(C);
   ok('C (primera vez): llegan las fotos', await espera(C, n => __game.works.length >= n, 6, 8000));
@@ -137,6 +163,11 @@ const DB = 'http://localhost:8382';
   await C.waitForTimeout(800);
   const reg = await C.evaluate(async id => { const o = await store('readonly', s => s.get(id)); return o && { t0: o.t0, de: o.de }; }, fm);
   ok('museo: la foto guarda t0 y no de', !!reg && Number.isFinite(reg.t0) && reg.de === undefined);
+  await C.evaluate(() => showHint('nada'));
+  await C.evaluate(id => { const w = __game.works.find(x => x.id === id); w.t0 = Date.now() - 86400000 * 5; pick(w); }, fm);
+  await C.waitForTimeout(300);
+  ok('museo: agarrar no dice quién ni cuándo', (await C.textContent('#hint')) === 'nada');
+  await C.evaluate(() => releaseHold());
 
   const err = pg => pg.textContent('#hint').then(t => /error/i.test(t));
   ok('sin errores', !(await err(A)) && !(await err(B)) && !(await err(C)) && !A.errs.length && !B.errs.length && !C.errs.length);

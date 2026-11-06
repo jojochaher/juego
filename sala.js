@@ -406,6 +406,34 @@ function salaHuella(w) {
   w.nueva = { visto: 0, tap: false, tapT: 0 };
   sala.pendientes.add(w.id);
 }
+// hace cuánto (t0 está en el reloj de quien la puso: si viene del futuro, "recién")
+function salaHaceTxt(t0) {
+  const m = Math.max(0, Date.now() - t0) / 60000;
+  if (m < 2) return 'recién';
+  if (m < 60) return 'hace ' + Math.floor(m) + ' min';
+  const h = m / 60;
+  if (h < 24) return 'hace ' + Math.floor(h) + (Math.floor(h) === 1 ? ' hora' : ' horas');
+  const d = Math.floor(h / 24);
+  if (d < 2) return 'ayer';
+  if (d < 60) return 'hace ' + d + ' días';
+  return d < 730 ? 'hace ' + Math.floor(d / 30) + ' meses' : 'hace más de dos años';
+}
+// al agarrar una foto de la sala (huellas, parte 2, v10.13): "la puso ● · hace 3 días" (o "la pusiste vos").
+// Las de antes de v10.12 no tienen de ni t0: no dice nada. Una tuya recién puesta tampoco (sería ruido).
+function salaHuellaTxt(w) {
+  if (!sala.active || !w || w.rota) return '';
+  const de = w.de, t0 = Number.isFinite(w.t0) && w.t0 > 1e12 ? w.t0 : null;
+  if (!de && !t0) return '';
+  const cuando = t0 ? salaHaceTxt(t0) : '';
+  if (salaEsMia(w)) return cuando && cuando !== 'recién' ? 'la pusiste vos · ' + cuando : '';
+  let quien = '';
+  if (de) {
+    const c = salaColDe(de);
+    quien = 'la puso ' + (c ? `<span style="color:${salaRgb(c)}">●</span>` : 'alguien');
+    if (sala.gente.has(de.id)) quien += ' (está en la sala)';
+  }
+  return quien && cuando ? quien + ' · ' + cuando : quien || 'la pusieron ' + cuando;
+}
 // ya la viste (la miraste un rato o la agarraste)
 function salaVista(w) {
   w.nueva = null;
