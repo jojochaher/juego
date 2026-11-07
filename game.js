@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.23';
+const VERSION = 'v10.24';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -642,6 +642,7 @@ function addWork(o, img) {
   if (sala.active && !o.vacio) w.tx = salaTxValida(o.tx); // en la sala: su imagen es una textura compartida (v10.23)
   w.cc = ccConFotos(o.cc, o.co);                         // y qué lleva cada cara (v10.20; co: las que tienen su foto, v10.21)
   if (sala.active && o.cg) { w.cg = cgValida(o.cg); w.cc = ccConCg(w.cc, w.cg); }   // en la sala: las fotos de sus caras (v10.22)
+  w.gr = grValido(o.gr);                                 // es parte de una pieza (agrupar, v10.24)
   setBuf(w);
   works.push(w);
   if (w.cg) salaCarasSync(w);                            // bajarlas
@@ -826,7 +827,7 @@ let velY = 0;
 function solidas() {
   const otros = salaEnManos(), r = [];
   for (const w of works) {
-    if ((held && w === held.work) || otros.has(w.id) || w.rota || w === cieloW) continue;   // la del cielo no está en su lugar
+    if ((held && (w === held.work || pzEnMano(w))) || otros.has(w.id) || w.rota || w === cieloW) continue;   // la del cielo no está en su lugar
     if (w.caras) r.push(...w.caras); else r.push(w);
   }
   return r;
@@ -951,7 +952,8 @@ const snapP = (v, P) => Math.round(v / P) * P;
 // grilla (de a P: 1 m como los puntitos del piso, 50 cm o 25 cm): de pie (o acostada si está casi horizontal), mirando en
 // pasos de 90°, girada en pasos de 90°, el lado más largo en múltiplos de P (P mínimo; el otro sigue la proporción)
 // y la esquina de abajo a la izquierda en un punto de la grilla (x, y, z múltiplos de P).
-function snapPose(p, P = pasoGrilla) {
+// fijo (una pieza en la mano, v10.24): solo se alinean el giro y la posición; el tamaño y la profundidad quedan
+function snapPose(p, P = pasoGrilla, fijo = false) {
   const up = [0, 1, 0];
   let n = norm(cross(p.r, p.u)), u;
   if (Math.abs(n[1]) > 0.7) {                       // acostada (piso o techo)
@@ -970,10 +972,10 @@ function snapPose(p, P = pasoGrilla) {
   // Repetida (v10.23) no se estira nada: los dos lados de a un paso
   const k = p.w >= p.h ? Math.max(P, snapP(p.w, P)) / p.w : Math.max(P, snapP(p.h, P)) / p.h;
   const tile = !!repValida(p.rep);
-  const w = tile ? Math.max(P, snapP(p.w, P)) : p.w * k, h = tile ? Math.max(P, snapP(p.h, P)) : p.h * k;
+  const w = fijo ? p.w : tile ? Math.max(P, snapP(p.w, P)) : p.w * k, h = fijo ? p.h : tile ? Math.max(P, snapP(p.h, P)) : p.h * k;
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
   const corner = c0.map(v => snapP(v, P));
-  const d = p.d > 0 ? dValida(snapP(p.d, P)) : undefined;   // la profundidad de una caja, de a un paso (o nada)
+  const d = fijo ? dValida(p.d) : p.d > 0 ? dValida(snapP(p.d, P)) : undefined;   // la profundidad de una caja, de a un paso (o nada)
   return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d, cc: p.cc, rep: p.rep };
 }
 // guías: la grilla en 3D (de a pasoGrilla) alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R de la foto
@@ -1051,7 +1053,7 @@ function guiasGrilla(p, col) {
 function heldPose(b) {
   if (held.aim) return held.work;
   const p = worldPose(b, held.L);
-  return grilla ? snapPose(p) : p;
+  return grilla ? snapPose(p, pasoGrilla, pzEsPieza()) : p;   // con una pieza, sin cambiar de tamaño (v10.24)
 }
 function previewPose(b) {
   const p = worldPose(b, enMano());
@@ -1368,6 +1370,7 @@ function touchOnHeld(L, x, y) {
   return [dot(p, L.r), dot(p, L.u)];
 }
 function resetHeld() {
+  if (held && pzEsPieza()) return;                       // una pieza no vuelve a como era (cambiaría la principal sola)
   const L = cur();
   const d = held ? len(L.c) : 1;                      // la vista previa vuelve a 1 m
   const aspect = held ? held.work.aspect : bloqueOn ? 1 : (video.videoWidth ? video.videoHeight / video.videoWidth : 4 / 3);
@@ -1380,8 +1383,9 @@ function resetHeld() {
 // agarrar: la cámara gira hasta que la foto queda en el centro (la foto no se mueve);
 // recién ahí queda pegada a la cámara
 function pick(w) {
-  if (held) return;
+  if (held || !pzPuedeAgarrar(w)) return;               // una pieza que todavía no está entera (v10.24)
   held = { work: w, L: null, aim: { t: 0 } };
+  pzAlAgarrar(w);                                       // si es parte de una pieza, vienen todas (v10.24)
   if (w.nueva) salaVista(w);                            // la agarraste: ya la viste (huellas)
   const huella = salaHuellaTxt(w);                      // quién la puso y cuándo (huellas, parte 2)
   if (huella) showHint(huella);
@@ -1425,8 +1429,10 @@ function clearWorks() {
 function drop() {
   if (!held) return;
   cur();
-  const w = held.work, ccAntes = w.cc, cgAntes = w.cg;
+  const w = held.work, ccAntes = w.cc, cgAntes = w.cg, pz = held.pz;
   Object.assign(w, heldPose(basis(), true));
+  // una pieza (v10.24): las otras van a donde se ven y todas quedan con la misma gr (antes de guardar la principal)
+  if (pz) { const r = pzSoltar(pz, w, o => sala.active ? salaSavePose(o) : store('readwrite', s => { const q = s.get(o.id); q.onsuccess = () => q.result && s.put({ ...q.result, c: o.c, r: o.r, u: o.u, gr: o.gr }); }).catch(() => {})); if (r) w.gr = r.g; }
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = relleno.aspectImg || w.h / w.w; }
   // museo: si la cambiás otra vez antes de que se guarde, gana la última. Otra imagen (o vacía): el sonido era del lugar de la vieja
@@ -1443,7 +1449,7 @@ function drop() {
   ciAplicar(held, w, ccAntes);                           // las fotos de las caras (v10.21): antes de armar sus caras
   if (sala.active) w.cg = salaCg(w, cgAntes);            // en la sala (v10.22): las que ya están en la base; las nuevas suben después
   setBuf(w);
-  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc, rep: w.rep };
+  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc, rep: w.rep, gr: w.gr };
   const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc) };   // cc sin 'o' + co (ver ccGuardar)
   if (sala.active) {
     if (relleno && relleno.vaciar) relleno.subida = salaVaciar(w);
@@ -1470,15 +1476,19 @@ function drop() {
 function cancelHold() { if (held) { buzz(8); releaseHold(); } }
 function trash() {
   if (!held) return;
-  const w = held.work;
-  works.splice(works.indexOf(w), 1);
-  if (w.relleno) { gl.deleteTexture(w.relleno.texVieja); w.relleno = null; }
-  gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
-  if (w.ci) { ciBorrar(w.ci); w.ci = undefined; }
-  if (sala.active) salaRemove(w);
-  else store('readwrite', s => { s.delete(w.id); for (let i = 1; i <= 5; i++) s.delete(w.id + '~c' + i); }).catch(() => {});
+  const w = held.work, otras = pzParaBorrar();             // con una pieza en la mano, se borra entera (v10.24)
+  for (const o of [w, ...otras]) {
+    if (!works.includes(o)) continue;
+    works.splice(works.indexOf(o), 1);
+    if (o.relleno) { gl.deleteTexture(o.relleno.texVieja); o.relleno = null; }
+    gl.deleteTexture(o.tex); gl.deleteBuffer(o.buf);
+    if (o.ci) { ciBorrar(o.ci); o.ci = undefined; }
+    if (sala.active) salaRemove(o);
+    else store('readwrite', s => { s.delete(o.id); for (let i = 1; i <= 5; i++) s.delete(o.id + '~c' + i); }).catch(() => {});
+  }
   buzz(20);
   releaseHold();
+  if (otras.length) showHint('borraste la pieza (' + (otras.length + 1) + ')');
 }
 
 // ---------- el cielo (v10.15, propuesta 3 de José, parte 2) ----------
@@ -1510,7 +1520,7 @@ function cieloAhora() {
   return Math.max(Date.now(), m + 1);
 }
 function usarDeCielo() {
-  if (!held || !puedeCielo(held.work)) return;
+  if (!held || !puedeCielo(held.work) || pzEsPieza()) return;
   const w = held.work, t = cieloAhora();
   for (const o of works) if (o !== w && o.cielo > 0) cieloGuardar(o, -o.cielo);   // la que estaba arriba vuelve a su lugar
   cieloGuardar(w, t);
@@ -1523,7 +1533,7 @@ function usarDeCielo() {
 // cambian solos (la foto termina de subir, otro cambia el cielo); solo se toca el DOM si cambió
 let cieloBtns = '';
 function cieloBotones() {
-  const k = (started && held && !pjVista && puedeCielo(held.work) ? 1 : 0) + ',' + (cieloObra() ? 1 : 0);
+  const k = (started && held && !pjVista && puedeCielo(held.work) && !pzEsPieza() && !(held.pz && held.pz.agrupando) ? 1 : 0) + ',' + (cieloObra() ? 1 : 0);
   if (k === cieloBtns) return;
   cieloBtns = k;
   $('cieloFoto').style.display = k[0] === '1' ? '' : 'none';
@@ -1576,10 +1586,10 @@ function rayoEn(x, y) {
 }
 function workAt(x, y) { const h = workHit(x, y); return h && h.w; }
 function workHit(x, y) {
-  const d = rayoEn(x, y);
+  const d = rayoEn(x, y), otros = salaOcupadas();
   let best = null, bestT = Infinity;
   for (const w of works) {
-    if (w === cieloW) continue;                         // está en el cielo: no se agarra (se baja desde ☰)
+    if (w === cieloW || otros.has(w.id)) continue;      // está en el cielo (se baja desde ☰) o la tiene otro (con su pieza: v10.24)
     for (const f of w.caras || [w]) {                   // una caja se agarra de cualquier cara
       const n = cross(f.r, f.u);
       const den = dot(d, n);
@@ -1621,7 +1631,13 @@ async function store(m, fn) {
     tx.oncomplete = () => res(out && out.result); tx.onerror = () => rej(tx.error);
   });
 }
+// mientras carga (de a una) no se agarra una pieza: le faltarían las que no cargaron (v10.24)
+let museoCargando = 0;
 async function loadWorks() {
+  museoCargando++;
+  try { await loadWorksYa(); } finally { museoCargando--; }
+}
+async function loadWorksYa() {
   if (/[?&]borrar/.test(location.search)) {
     await store('readwrite', s => s.clear());
     history.replaceState(null, '', location.pathname);
@@ -1772,6 +1788,7 @@ const MODE_HINT = {
   extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño · tocá una cara: qué lleva',
 };
 function setMode(m) {
+  if (held && (pzEsPieza() || (held.pz && held.pz.agrupando)) && m !== 'mover' && m !== 'girar') m = 'mover';   // una pieza solo se mueve y se gira (v10.24)
   mode = m; extruirTxt = '';
   if (m !== 'extruir') caraSel = 0;
   pintarCaras();
@@ -1834,13 +1851,17 @@ function ui() {
   $('bloque').classList.toggle('solo', !camOn);
   show($('guardarBloque'), started && bloqueOn && !holding);
   show($('camChica'), started && bloqueOn && !holding);
-  const vacio = holding && held.work.vacio;
+  const pieza = holding && (pzEsPieza() || !!(held.pz && held.pz.agrupando));   // con una pieza en la mano (o agrupando: v10.24) solo se mueve y se gira
+  const vacio = holding && held.work.vacio && !pieza;
   // con el bloque equipado (cámara guardada), "cámara" la abre para sacarle la foto; ya abierta, "sacar foto"
-  show($('llenarFoto'), vacio); show($('vaciarFoto'), holding && !held.work.vacio);
+  show($('llenarFoto'), vacio); show($('vaciarFoto'), holding && !held.work.vacio && !pieza);
   // repetir la textura y guardarla en tu biblioteca (v10.23)
-  const conImagen = holding && !held.work.vacio && !held.work.rota;
+  const conImagen = holding && !held.work.vacio && !held.work.rota && !pieza;
   show($('repetir'), conImagen); show($('aTextura'), conImagen);
   if (conImagen) repetirPintar();
+  for (const m of ['recortar', 'escalar', 'extruir']) show(modesEl.querySelector('[data-m="' + m + '"]'), !pieza);
+  show(resetBtn, !pieza);
+  pzPintar();
   cieloBotones();
   if (vacio) $('llenarFoto').textContent = camUp ? 'sacar foto' : camOn ? 'abriendo…' : 'cámara';
   $('girarCam').classList.toggle('ocupado', camStarting);
@@ -1851,10 +1872,17 @@ function ui() {
   modosArriba();
 }
 // la fila de ajustar va justo encima de la de edición (que puede ocupar dos líneas en un celu angosto: v10.23)
+// edicionArriba: hasta dónde llegan las filas de edición (las caritas de "encontrarse" no van más abajo: salaLejos)
+let edicionArriba = Infinity;
 function modosArriba() {
-  if (modesEl.style.display === 'none' || $('edicion').style.display === 'none') return;
+  edicionArriba = Infinity;
+  if ($('edicion').style.display === 'none') return;
   const r = $('edicion').getBoundingClientRect();
+  if (r.height > 0) edicionArriba = r.top;
+  if (modesEl.style.display === 'none') return;
   if (r.height > 0) modesEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+  const m = modesEl.getBoundingClientRect();
+  if (m.height > 0) edicionArriba = Math.min(edicionArriba, m.top);
 }
 window.addEventListener('resize', () => modosArriba());
 
@@ -2077,7 +2105,7 @@ canvas.addEventListener('wheel', e => {
   e.preventDefault();
   if (!started || !(held || (camOn && camReady) || bloqueOn)) return;
   const L = cur(), d = Math.max(-200, Math.min(200, e.deltaY || e.deltaX));
-  if (e.shiftKey) scaleBy(L, Math.exp(-d * 0.002));
+  if (e.shiftKey) { if (!(held && pzEsPieza())) scaleBy(L, Math.exp(-d * 0.002)); }
   else if (e.altKey) rollBy(L, d * 0.004);
   else setDist(L, clamp(len(L.c) * Math.exp(d * 0.0015), DIST_MIN, DIST_MAX));
 }, { passive: false });
@@ -2167,7 +2195,7 @@ canvas.addEventListener('pointermove', e => {
     let giro = 0;
     if (gesture.girando) giro = da;
     else { gesture.giro += da; if (Math.abs(gesture.giro) > 0.17) { gesture.girando = true; giro = gesture.giro - Math.sign(gesture.giro) * 0.17; } }
-    if (mode === 'mover') { scaleBy(L, k); if (giro) rollBy(L, -giro); }
+    if (mode === 'mover') { if (!(held && pzEsPieza())) scaleBy(L, k); if (giro) rollBy(L, -giro); }   // una pieza no cambia de tamaño
     else if (mode === 'girar') { if (giro) rollBy(L, -giro); }
     else if (mode === 'extruir') { const w0 = L.w; scaleBy(L, k); if (L.d) L.d = Math.min(D_MAX, L.d * L.w / w0); }   // la caja entera
     else if (mode === 'recortar' && !vacioEnMano()) zoomContent(L, gesture.uv0, g.d / Math.max(10, gesture.d0));
@@ -2218,13 +2246,16 @@ function endTouch(e) {
   // extruir: tocar una cara de la caja la elige (v10.20); si no tocaste la caja, sigue como siempre
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && mode === 'extruir' && !pjVista && touches.size === 0
       && e.button === 0 && (held || (camOn && camReady) || bloqueOn) && tocarCara(e.clientX, e.clientY)) return;
+  // agrupando (v10.24): tocar suma o saca fotos de la pieza
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && held.pz && held.pz.agrupando && !pjVista
+      && touches.size === 0 && e.button === 0) { cur(); pzTocar(e.clientX, e.clientY); return; }
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
     // tocar a alguien de la sala (más cerca que la foto que hay detrás) abre "ir ahí / seguir" (v10.10)
     const h = workHit(e.clientX, e.clientY), q = touches.size === 0 ? salaPersonaEn(e.clientX, e.clientY) : null;
     if (q && (!h || q.t < h.t)) salaElegir(q.id);
     else if (h) { salaDejarDeSeguir('agarraste'); pick(h.w); }
   } else if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && !pjVista && mode === 'mover'
-             && touches.size === 0 && e.button === 0 && enLoQueTenes(e.clientX, e.clientY)) {
+             && touches.size === 0 && e.button === 0 && !pzEsPieza() && enLoQueTenes(e.clientX, e.clientY)) {
     abrirArchivoHasta = performance.now() + 800;   // se abre con el click que sigue (Safari solo abre un input de archivo desde un click)
   }
 }
@@ -2449,6 +2480,7 @@ function escena(b, dt, yo) {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   if (cieloW) cieloDibujar(b, cieloW);                   // el cielo, detrás de todo
   const m = matrix(b);
+  pzVista = m;                                           // las de una pieza en la mano se dibujan con esta por su movimiento (v10.24)
 
   // obras
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
@@ -2456,7 +2488,7 @@ function escena(b, dt, yo) {
   gl.uniformMatrix4fv(Q.m, false, m);
   gl.uniform3fv(Q.eye, pos); gl.uniform3fv(Q.niebla, atm); gl.uniform3fv(Q.nieblaD, NIEBLA);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
-  for (const w of works) if ((!held || w !== held.work) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawObra(w);
+  for (const w of works) if ((!held || (w !== held.work && !pzEnMano(w))) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawObra(w);
   salaDraw(b, dt);
   if (!yo) salaNuevasDibujar(b, dt);                     // lo nuevo desde tu última vez brilla (huellas, v10.12)
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }
@@ -2473,6 +2505,7 @@ function escena(b, dt, yo) {
       tex = videoTex;
     }
     drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], deco(), ciMano());
+    pzDibujarMano(b);                                    // las otras de la pieza (v10.24)
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
@@ -2490,6 +2523,7 @@ function escena(b, dt, yo) {
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     drawObra(held.work, 0.35);
+    pzFantasmas();
     gl.depthMask(true);
     gl.disable(gl.BLEND);
   }

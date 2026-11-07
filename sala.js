@@ -146,7 +146,8 @@ setInterval(() => {
 // cc: qué lleva cada cara de la caja (v10.20; sin 'o': las caras con su propia foto las dice cg, v10.22, ver cgValida)
 // rep: la textura repetida, [ancho, alto] de cada repetición en metros (v10.23; los de antes la ven estirada);
 // tx: la imagen es una textura de la biblioteca, guardada una sola vez en imgs/tx-<tx> (v10.23; ver salaTxBajar)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg', 'rep', 'tx'];
+// gr: es parte de una pieza (agrupar, v10.24): todas las de la misma gr se agarran y se mueven juntas (ver pieza.js)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg', 'rep', 'tx', 'gr'];
 function soloPose(o) {
   const p = Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
   if ('cc' in p) { const cc = ccGuardar(p.cc); if (cc) p.cc = cc; else delete p.cc; }   // 'o' → m: así un v10.20/21 no la pierde entera
@@ -201,6 +202,11 @@ function salaUpsert(id, pose) {
   sala.borradas.delete(id);
   const w = works.find(x => x.id === id);
   if (w) salaTxDeViejo(w, id, pose);
+  const mia = w && pzEnMano(w) && { c: w.c, r: w.r, u: w.u, gr: w.gr };   // es de la pieza que tengo en la mano (v10.24): su lugar es el mío hasta soltar
+  if (mia) { salaUpsertYa(w, id, pose); if (works.includes(w)) { Object.assign(w, mia); setBuf(w); } return; }
+  salaUpsertYa(w, id, pose);
+}
+function salaUpsertYa(w, id, pose) {
   if (w) {
     w.cielo = pose.cielo;                               // el cielo vale siempre lo de la base (también si la tengo en la mano)
     if (!w.subiendo) salaSonMarca(w, pose.so);          // y el sonido (salvo mientras subo una imagen mía: esa no tiene)
@@ -211,7 +217,7 @@ function salaUpsert(id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv, so = w.so, tx = w.tx; Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.tx = tx; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so, tx = w.tx; Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.gr = pose.gr; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.tx = tx; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
@@ -219,7 +225,7 @@ function salaUpsert(id, pose) {
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
     if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
-    Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.tx = pose.tx; salaCarasDe(w, pose);   // la profundidad, la repetición, la textura y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
+    Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.tx = pose.tx; w.gr = pose.gr; salaCarasDe(w, pose);   // la profundidad, la repetición, la textura y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     return;
@@ -262,12 +268,14 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     if (held && held.work === w) { w.llenadoAfuera = ultima; return; }   // lo tengo en la mano: se resuelve al soltarlo
     if (ultima.vacio) return;                                            // mientras bajaba, la vaciaron (salaUpsert ya la dejó vacía)
     if (!w.vacio && !cambiar) return;
+    const mia = pzEnMano(w) && { c: w.c, r: w.r, u: w.u, gr: w.gr };   // de la pieza en mi mano: la posición sigue siendo la mía (v10.24)
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
-    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.rep = ultima.rep; w.tx = ultima.tx; salaCarasDe(w, ultima);
+    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.rep = ultima.rep; w.tx = ultima.tx; w.gr = ultima.gr; salaCarasDe(w, ultima);
     w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
     salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
     if (!w.uv) w.uv = FULL.slice();
+    if (mia) Object.assign(w, mia);
     setBuf(w);
     if (ultima.iv && ultima.iv !== ivPedido) salaLlenarDeAfuera(w, id, ultima, 0, true);   // la cambiaron otra vez mientras bajaba
   }).catch(() => {
@@ -293,9 +301,11 @@ function salaQuitarLocal(id) {
   const w = works.find(x => x.id === id);
   if (!w) return;
   if (held && held.work === w) { releaseHold(); showHint('alguien borró la foto que tenías en la mano'); }
+  const deMiPieza = pzEnMano(w);
   works.splice(works.indexOf(w), 1);
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
   if (w.ci) { ciBorrar(w.ci); w.ci = undefined; }
+  if (deMiPieza) ui();                                  // los botones de la pieza (v10.24)
 }
 
 // llamadas desde game.js
@@ -674,6 +684,7 @@ function salaHuellaPose(pose) {
   if ('cg' in pose) { const cg = cgValida(pose.cg); if (cg) pose.cg = cg; else delete pose.cg; }   // las fotos de sus caras (v10.22) o nada
   if ('rep' in pose) { const r = repValida(pose.rep); if (r) pose.rep = r; else delete pose.rep; }   // la textura repetida (v10.23) o nada
   if ('tx' in pose && (!salaTxValida(pose.tx) || pose.vacio)) delete pose.tx;   // su imagen es una textura compartida (v10.23) o nada
+  if ('gr' in pose && !grValido(pose.gr)) delete pose.gr;   // la pieza de la que es parte (v10.24) o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -770,7 +781,7 @@ function salaNuevasDibujar(b, dt) {
     for (const w of works) {
       const nv = w.nueva;
       if (nv && w === cieloW) { if (cuenta) salaVista(w); continue; }   // es el cielo: se ve desde todos lados (ya jugando)
-      if (!nv || w.rota || (held && held.work === w) || otros.has(w.id)) continue;
+      if (!nv || w.rota || (held && (held.work === w || pzEnMano(w))) || otros.has(w.id)) continue;
       const v = sub(w.c, pos), d = len(v), z = dot(v, b.f);
       if (d < 0.05) continue;
       const x = Math.abs(dot(v, b.r)), y = Math.abs(dot(v, b.u)), lado = Math.max(w.w, w.h);
@@ -820,6 +831,9 @@ function salaEnviarPresencia() {
     if (L.d && held) { let mo = 0; for (let i = 1; i <= 5; i++) { const e = (ccValida(L.cc) || '')[i - 1] === 'o' && ciVer(i); if (e && e.subida) mo |= 1 << (i - 1); } if (mo) est.mo = mo; }   // las caras con su foto que ya está en la base (v10.22)
     const rp = repValida(L.rep); if (rp) est.mr = rp;   // la textura repetida (v10.23)
     if (held) est.mid = held.work.id;
+    // las de mi pieza que los demás no saben que tengo (no tienen la gr de la principal: las que estoy sumando), v10.24
+    const mp = held ? pzLista().filter(e => !grValido(held.work.gr) || e.w.gr !== held.work.gr).slice(0, 30).map(e => e.w.id) : [];
+    if (mp.length) est.mp = mp;
   }
   const s = JSON.stringify(est);
   const now = Date.now();
@@ -840,10 +854,22 @@ function salaCambioGente(path, data, type) {
   rtcSync();
 }
 
-// fotos que otro tiene agarradas: no se dibujan en su lugar (se ven en su mano)
+// fotos que otro tiene agarradas: no se dibujan en su lugar (se ven en su mano). Si la que agarró es parte de una pieza
+// (v10.24), toda la pieza (así la tiene él: ver pzAlAgarrar)
 function salaEnManos() {
   const s = new Set();
-  if (sala.active) for (const p of sala.gente.values()) if (p.mano && p.mano.mid) s.add(p.mano.mid);
+  if (sala.active) for (const p of sala.gente.values()) if (p.mano && p.mano.mid) {
+    s.add(p.mano.mid);
+    const w = works.find(x => x.id === p.mano.mid), g = w && grValido(w.gr);
+    if (g) for (const o of works) if (o.gr === g) s.add(o.id);
+  }
+  return s;
+}
+// las que no se pueden agarrar ni sumar a una pieza: las que tiene otro y las que está sumando a una pieza nueva (mp, v10.24:
+// esas no se ven en su mano porque no se sabe dónde las agarró; siguen en su lugar hasta que suelta)
+function salaOcupadas() {
+  const s = salaEnManos();
+  if (sala.active) for (const p of sala.gente.values()) if (p.mano && p.mp) for (const id of p.mp) s.add(id);
   return s;
 }
 
@@ -879,6 +905,7 @@ function salaPersona(id, d) {
     p.manoT = t;
     if (salto) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };   // lo que tiene en la mano también salta
   } else { p.mano = p.manoT = null; }
+  p.mp = Array.isArray(d.mp) ? d.mp.filter(x => typeof x === 'string' && x.length < 60).slice(0, 30) : null;   // las que suma a una pieza (v10.24)
   p.t = d.t || Date.now();
   p.visto = Date.now();
 }
@@ -972,7 +999,7 @@ function salaManoDe(id, p, k) {
       const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d, cc: M.cc, rep: M.rep };
       if (M.mid) {
         const w = works.find(x => x.id === M.mid);
-        if (w) drawFramed(pose, w.tex, p.col, null, w.ci);   // con las fotos de sus caras que tengo (v10.22)
+        if (w) { drawFramed(pose, w.tex, p.col, null, w.ci); pzDibujarDeOtro(w, pose); }   // con las fotos de sus caras que tengo (v10.22) y su pieza (v10.24)
       } else {
         const v = p.cam && rtcVista(id);
         if (p.bq) drawFramed({ ...pose, uv: FULL }, texVacio(), p.col);
@@ -1067,7 +1094,7 @@ function salaLejos(b) {
     // el marco donde van las caritas: lejos de tu cara y los botones de arriba, del joystick y los botones de abajo,
     // de la barra de distancia (cuando está) y de las zonas que tapa el iPhone (notch, barrita de abajo)
     const x0 = 34 + sg.l, x1 = W - 34 - sg.r - (distEl.style.display !== 'none' ? 50 : 0);
-    let y0 = 120 + sg.t, y1 = H - 196 - sg.b;
+    let y0 = 120 + sg.t, y1 = Math.min(H - 196 - sg.b, edicionArriba - 32);   // (las filas de edición pueden ser dos o tres)
     if (y1 - y0 < 60) { y0 = cy - 30; y1 = cy + 30; }
     const puestos = [], ws = solidas();
     for (const [id, p] of sala.gente) {
