@@ -164,3 +164,15 @@ Mantener al día: cuando cambia algo técnico, editar la parte que cambia (no re
 - Ideas sin decidir: voz que dependa del lugar (reverb en cuartos cerrados de fotos), subir el registro a Firebase solo, toggle "atravesar", toggle para no mandar la vista de la cámara, saltar, nombres sobre los personajes, mejor calidad al hacer zoom, alinear contra los bordes de otras fotos (no solo contra la grilla).
 - "Traer mis fotos" a una sala: José dijo "todavía no".
 - Dirección de arrastre: falta que José elija y sacar el toggle.
+
+---
+
+## Después de achicar CLAUDE.md
+
+- v10.23 (7 nov 2026, propuesta 8 de José aprobada el 5 nov, entera en una vuelta): biblioteca de texturas.
+  - "guardar textura" lee la imagen de la placa (texLeer) en vez de buscar el original: en el museo el blob está en IndexedDB y en la sala habría que volver a bajarla; la textura ya está en memoria (≤512 px, igual que lo que se ve). Se dibuja en una textura RGBA porque leer un framebuffer con una RGB no está garantizado en WebGL1.
+  - La biblioteca va en el mismo store 'obras' (registros 'tex~<g>' con img/mini, sin blob ni vacio) para no subir la versión de IndexedDB (en iOS indexedDB.open ya es delicado) y para que un juego viejo la saltee sola.
+  - Si no hay texturas, tocar lo que tenés en la mano abre el selector como antes (no se suma un paso a quien no usa la biblioteca). La hoja es propia (hojaAbajo) y "cámara o galería" abre el input desde su click (Safari).
+  - Repetir: con rep la imagen va entera (uv FULL) y la repetición es la imagen entera; rep guarda [ancho, alto] para que los demás no dependan de la proporción de la imagen (no la saben hasta bajarla). Se hizo en el shader (fract) porque las texturas no son potencia de 2 (WebGL1 no deja REPEAT); el varying va en highp porque con mediump (16 bits) 160 baldosas pierden precisión.
+  - Al llenar desde la biblioteca se guarda la imagen entera (con uv que llena la forma) y no un recorte: así es la misma imagen en todos los bloques (en la sala se sube una vez) y se puede repetir entera.
+  - Sala: imgs/tx-<g> (con guión, no '~c', para que el conteo de caras de "cuánto ocupa" no la confunda). La revisión aparte encontró: que la marca local "ya subida" no se enteraba si otro la borraba (ahora se mira siempre la lista de claves), que pedir con shallow una hoja devuelve la imagen entera (se pide la lista de imgs), que si fallaba la subida igual se borraba la textura vieja (ahora recién después de que salió bien) y que el borrado debía mirar la base (ahora GET de poses antes de borrar). También: la fila de ajustar se pisaba con la de edición en dos líneas (modosArriba), reintentos con la pose más nueva en salaLlenarDeAfuera y tx/rep que quedaban al vaciarla otro mientras la tenías.

@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.22';
+const VERSION = 'v10.23';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -121,10 +121,15 @@ function program(vs, fs) {
 const quadProg = program(`
 attribute vec3 p; attribute vec2 uv; uniform mat4 m; uniform vec3 eye; varying vec2 v; varying vec3 rel;
 void main() { v = uv; rel = (p - eye) / 16.0; gl_Position = m * vec4(p, 1.0); }`, `
-precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; uniform vec2 fade; varying vec2 v;
-uniform vec3 niebla; uniform vec3 nieblaD; varying vec3 rel;
+precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; uniform vec2 fade;
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+varying highp vec2 v;
+#else
+varying vec2 v;
+#endif
+uniform vec3 niebla; uniform vec3 nieblaD; varying vec3 rel; uniform float rep;
 void main() {
-  vec4 c = texture2D(t, v); if (c.a < 0.5) discard;
+  vec4 c = texture2D(t, rep > 0.5 ? fract(v) : v); if (c.a < 0.5) discard;
   float f = smoothstep(nieblaD.x, nieblaD.y, length(rel) * 16.0) * nieblaD.z;
   gl_FragColor = vec4(mix(c.rgb * tint, niebla, f), alpha * mix(fade.x, fade.y, v.y));
 }`);
@@ -132,6 +137,7 @@ const Q = {
   p: gl.getAttribLocation(quadProg, 'p'), uv: gl.getAttribLocation(quadProg, 'uv'),
   m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'), alpha: gl.getUniformLocation(quadProg, 'alpha'), fade: gl.getUniformLocation(quadProg, 'fade'),
   eye: gl.getUniformLocation(quadProg, 'eye'), niebla: gl.getUniformLocation(quadProg, 'niebla'), nieblaD: gl.getUniformLocation(quadProg, 'nieblaD'),
+  rep: gl.getUniformLocation(quadProg, 'rep'),
 };
 // (rel va dividido por 16: en el iPhone mediump es de 16 bits y el cuadrado de una distancia de 300 m no entraría)
 
@@ -198,6 +204,7 @@ function colorMedio(src) {
 }
 // los 8x8 colores de cada textura (para el color del borde de una cara de caja, v10.20)
 const texGrid = new WeakMap();
+const texTam = new WeakMap();   // el tamaño en px de cada textura (para leerla de vuelta: texLeer)
 // el color de un borde de la imagen dentro del recorte uv: lado 'r' / 'l' / 't' / 'b' (la columna o fila de la punta) o
 // null (todo el recorte). Sin los 8x8 (la vista previa de la cámara), el color promedio o un gris.
 function colorBorde(tex, uv, lado) {
@@ -218,11 +225,72 @@ function texture(src) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  if (src) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src); const m = colorMedio(src); if (m) { texCol.set(t, m.c); texGrid.set(t, m.g); } }
+  if (src) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, src); const m = colorMedio(src); if (m) { texCol.set(t, m.c); texGrid.set(t, m.g); }
+    texTam.set(t, [src.naturalWidth || src.videoWidth || src.width, src.naturalHeight || src.videoHeight || src.height]);
+  }
   else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
   return t;
 }
 const white = texture(null);
+// leer de vuelta (de la placa de video) la parte uv de una textura, a lo sumo de max px: un lienzo (o null si no se puede).
+// Sirve para "guardar textura" (v10.23): la imagen de una foto ya está acá, no hace falta volver a bajarla ni leerla del celu.
+// Se dibuja en una textura RGBA aparte (leer una RGB directo no anda en todos los celus) y se restaura lo que se tocó.
+let leerProg = null, leerBuf = null;
+function texLeer(tex, uv = FULL, max = 512) {
+  const tam = texTam.get(tex);
+  if (!tam || !tam[0] || !tam[1]) return null;
+  const aw = Math.abs(uv[2] - uv[0]), ah = Math.abs(uv[3] - uv[1]);
+  let cw = aw * tam[0], ch = ah * tam[1];
+  const k = Math.min(1, max / Math.max(cw, ch, 1));
+  cw = Math.max(1, Math.round(cw * k)); ch = Math.max(1, Math.round(ch * k));
+  const dst = gl.createTexture(), fb = gl.createFramebuffer(), dt = gl.isEnabled(gl.DEPTH_TEST), bl = gl.isEnabled(gl.BLEND);
+  let out = null;
+  try {
+    if (!leerProg) {
+      leerProg = program(`
+attribute vec2 p; uniform vec4 uvr; varying vec2 v;
+void main() { vec2 t = p * 0.5 + 0.5; v = vec2(mix(uvr.x, uvr.z, t.x), mix(uvr.y, uvr.w, t.y)); gl_Position = vec4(p, 0.0, 1.0); }`, `
+precision mediump float; uniform sampler2D t; varying vec2 v;
+void main() { gl_FragColor = vec4(texture2D(t, v).rgb, 1.0); }`);
+      leerBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, leerBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, dst);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cw, ch, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('framebuffer incompleto');
+    gl.viewport(0, 0, cw, ch);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+    gl.useProgram(leerProg);
+    const ap = gl.getAttribLocation(leerProg, 'p');
+    gl.bindBuffer(gl.ARRAY_BUFFER, leerBuf);
+    gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform4f(gl.getUniformLocation(leerProg, 'uvr'), uv[0], uv[1], uv[2], uv[3]);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disableVertexAttribArray(ap);
+    const px = new Uint8Array(cw * ch * 4);
+    gl.readPixels(0, 0, cw, ch, gl.RGBA, gl.UNSIGNED_BYTE, px);   // la fila 0 es la de arriba de la imagen (y = -1 lleva v0)
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const x = c.getContext('2d'), im = x.createImageData(cw, ch);
+    im.data.set(px); x.putImageData(im, 0, 0);
+    out = c;
+  } catch (e) { diag('texturas: no pude leer la imagen (' + e.message + ')'); }
+  finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    if (dt) gl.enable(gl.DEPTH_TEST); if (bl) gl.enable(gl.BLEND);
+    gl.deleteFramebuffer(fb); gl.deleteTexture(dst);
+    gl.useProgram(quadProg);
+  }
+  return out;
+}
 const videoTex = texture(null);
 const vc = document.createElement('canvas'), vcx = vc.getContext('2d');
 function videoFrame() {
@@ -257,7 +325,8 @@ function quadData(c, r, u, w, h, uv = FULL) {
 const scratch = gl.createBuffer();
 // fade = [a, b]: el alfa va de a (borde de arriba del cuadro, +u) a b (abajo, -u); para que las guías se desvanezcan en las puntas
 const SIN_FADE = [1, 1];
-function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0) {
+// rep: la textura se repite (biblioteca de texturas, v10.23): las coordenadas uv van en "baldosas" (0..n) y se usa fract
+function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0, rep = false) {
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   if (data) gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(Q.p); gl.vertexAttribPointer(Q.p, 3, gl.FLOAT, false, 20, 0);
@@ -266,12 +335,14 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0) {
   gl.uniform3fv(Q.tint, tint);
   gl.uniform1f(Q.alpha, alpha);
   gl.uniform2fv(Q.fade, fade);
+  gl.uniform1f(Q.rep, rep ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, first, 6);
 }
 // una obra puesta: una foto (un cuadro) o una caja (6 caras en su buffer, cada una con su sombra)
 function drawObra(w, alpha = 1) {
-  if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);
-  drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha);        // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
+  const tile = !!w.rep && !w.vacio;                      // la textura repetida (v10.23)
+  if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile);
+  drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile);   // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
   let lisas = false, fotos = false;
   for (let i = 1; i < w.caras.length; i++) {
     const f = w.caras[i];
@@ -279,6 +350,7 @@ function drawObra(w, alpha = 1) {
     if (f.img) { fotos = true; continue; }
     gl.uniform3f(Q.tint, f.k, f.k, f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
   }
+  if (fotos) gl.uniform1f(Q.rep, 0);                    // las fotos propias de las caras no se repiten
   if (fotos) for (let i = 1; i < w.caras.length; i++) {   // las que tienen su propia foto (v10.21)
     const f = w.caras[i];
     if (!f.img) continue;
@@ -302,6 +374,19 @@ function drawObra(w, alpha = 1) {
 // afuera de la caja (así se lee derecha, no espejada, desde afuera).
 const D_MAX = 40;
 const dValida = d => Number.isFinite(d) && d > 1e-4 ? Math.min(d, D_MAX) : undefined;
+// repetir la textura (biblioteca de texturas, v10.23, propuesta 8): rep = [ancho, alto] en metros de cada repetición
+// (la imagen entera: con rep, uv es siempre FULL). Sin rep (o roto): estirada, como siempre.
+const REP_MIN = 0.05, REP_N = 200;                       // a lo sumo 200 repeticiones por lado (precisión y dibujo)
+function repValida(r) {
+  if (!Array.isArray(r) || r.length !== 2 || !r.every(v => Number.isFinite(v) && v >= REP_MIN && v <= 40)) return undefined;
+  return [Math.round(r[0] * 1000) / 1000, Math.round(r[1] * 1000) / 1000];
+}
+// las coordenadas de la textura para dibujar una cara de ancho w y alto h: el recorte uv o, repetida, cuántas baldosas entran
+function uvDe(p, w = p.w, h = p.h) {
+  const r = repValida(p.rep);
+  if (!r) return p.uv || FULL;
+  return [0, 0, Math.min(REP_N, w / r[0]), Math.min(REP_N, h / r[1])];
+}
 // qué lleva cada una de las otras 5 caras (v10.20, parte 2): cc = 5 letras, en el orden atrás, costado derecho, costado
 // izquierdo, arriba, abajo: m = la misma imagen (derecha desde afuera, como en v10.19), e = espejada (sigue desde el borde
 // de la foto como en un espejo: sin costura en la arista), b = el borde de la foto estirado (se "derrama" hacia atrás),
@@ -348,18 +433,19 @@ function cajaCaras(p, ci = p.ci) {
   const d = dValida(p.d);
   if (!d) return null;
   const cc = ccValida(p.cc) || 'mmmmm';
-  const n = mul(norm(cross(p.r, p.u)), -1), r = p.r, u = p.u, C = add(p.c, mul(n, d / 2)), uv = p.uv || FULL;
+  // repetida (v10.23): las mismas cuentas, pero en baldosas (uv de 0 a n) y sin tope: la imagen sigue por todas las caras
+  const tile = !!repValida(p.rep), n = mul(norm(cross(p.r, p.u)), -1), r = p.r, u = p.u, C = add(p.c, mul(n, d / 2)), uv = uvDe(p);
   const aw = uv[2] - uv[0], ah = uv[3] - uv[1], su = aw / p.w, sv = ah / p.h;
   const recorte = (w, h) => {
     let a = w * su, b = h * sv;
-    const k = Math.min(1, aw / a, ah / b); a *= k; b *= k;
+    const k = tile ? 1 : Math.min(1, aw / a, ah / b); a *= k; b *= k;
     const cu = (uv[0] + uv[2]) / 2, cv = (uv[1] + uv[3]) / 2;
     return [cu - a / 2, cv - b / 2, cu + a / 2, cv + b / 2];
   };
   const neg = v => mul(v, -1);
   // espejada y borde: la cara arranca en la arista que comparte con la foto. a/b = cuánto de la imagen entra en la
   // profundidad (con la misma escala; si la caja es más honda que la foto, se estira)
-  const a = Math.min(d * su, aw), b = Math.min(d * sv, ah), E = 0.002;
+  const a = tile ? d * su : Math.min(d * su, aw), b = tile ? d * sv : Math.min(d * sv, ah), E = 0.002;
   const [u0, v0, u1, v1] = uv;
   const UV = {
     e: [null, [u1, v0, u0, v1], [u1, v0, u1 - a, v1], [u0 + a, v0, u0, v1], [u0, v0 + b, u1, v0], [u0, v1, u1, v1 - b]],
@@ -399,13 +485,15 @@ function drawFramed(p, tex, color, deco = null, ci = undefined) {
   if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);         // hacia atrás de la foto
   const atras = add(p.c, mul(n, 0.004 * d));
   drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
-  drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, p.uv), tex, [1, 1, 1]);
+  if (p.rep && !repValida(p.rep)) p = { ...p, rep: undefined };
+  const tile = !!p.rep;                                  // la textura repetida (v10.23)
+  drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, uvDe(p)), tex, [1, 1, 1], 1, SIN_FADE, 0, tile);
   const caras = cajaCaras(p, ci);                        // una caja (extruida): las otras 5 caras (ci: sus fotos propias)
   if (caras) for (let i = 1; i < caras.length; i++) {
     const f = caras[i];
     if (f.img) drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), f.img.tex, [f.k, f.k, f.k]);
     else if (f.t === 'c') { const c = colorBorde(tex, p.uv || FULL, CARA_LADO[i]); drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h), white, [c[0] * f.k, c[1] * f.k, c[2] * f.k]); }
-    else drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k]);
+    else drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h, f.uv), tex, [f.k, f.k, f.k], 1, SIN_FADE, 0, tile);
   }
   if (deco) {
     // sin prueba de profundidad: el borde oscuro y el centro blanco de los cuadraditos están en el mismo plano y,
@@ -517,7 +605,7 @@ const works = []; // {id, c, r, u, w, h, uv, aspect, tex, buf}
 // Cada cara sabe de qué obra es (obra) y hasta dónde llega la caja arriba (top: una caja baja se sube como un escalón).
 function setBuf(w) {
   gl.bindBuffer(gl.ARRAY_BUFFER, w.buf);
-  w.d = dValida(w.d); w.cc = ccValida(w.cc);
+  w.d = dValida(w.d); w.cc = ccValida(w.cc); w.rep = w.vacio ? undefined : repValida(w.rep);
   const caras = w.d && !w.rota ? cajaCaras(w) : null;   // una rota no choca ni es caja (pero no pierde su profundidad)
   if (caras) {
     const top = Math.max(...caras.map(f => f.c[1] + (Math.abs(f.r[1]) * f.w + Math.abs(f.u[1]) * f.h) / 2));
@@ -527,7 +615,7 @@ function setBuf(w) {
     const data = new Float32Array(caras.length * 30);
     caras.forEach((f, i) => data.set(quadData(f.c, f.r, f.u, f.w, f.h, f.uv), i * 30));
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-  } else gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.uv), gl.STATIC_DRAW);
+  } else gl.bufferData(gl.ARRAY_BUFFER, quadData(w.c, w.r, w.u, w.w, w.h, w.vacio ? w.uv : uvDe(w)), gl.STATIC_DRAW);
   w.caras = caras;
 }
 // una foto con números rotos (NaN, ejes en cero) no puede tocar la física: si no, te deja en NaN y no se ve nada
@@ -550,6 +638,8 @@ function addWork(o, img) {
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
+  w.rep = repValida(o.rep);                              // la textura repetida (biblioteca de texturas, v10.23)
+  if (sala.active && !o.vacio) w.tx = salaTxValida(o.tx); // en la sala: su imagen es una textura compartida (v10.23)
   w.cc = ccConFotos(o.cc, o.co);                         // y qué lleva cada cara (v10.20; co: las que tienen su foto, v10.21)
   if (sala.active && o.cg) { w.cg = cgValida(o.cg); w.cc = ccConCg(w.cc, w.cg); }   // en la sala: las fotos de sus caras (v10.22)
   setBuf(w);
@@ -606,15 +696,21 @@ function guardarComoEstaba(w) {
   if (w.relleno) { if (w.tex !== w.relleno.texVieja) gl.deleteTexture(w.tex); return w.relleno; }
   return { texVieja: w.tex, aspect: w.aspect, vacioViejo: !!w.vacio };
 }
-function llenarBloque(src) {
+// entera (una textura de la biblioteca, v10.23) o repetida: se guarda la imagen entera y se muestra con el recorte que
+// llena la forma (uvLlena); así la misma textura es la misma imagen en todos los bloques y se puede repetir entera
+// tx: la clave de la textura de la biblioteca (en la sala se sube una sola vez y la pose la nombra: salaTxSubir)
+function llenarBloque(src, entera = false, tx = undefined) {
   if (!held) return;
   cur();
   const w = held.work, L = held.L, asp = L.h / L.w;
-  const c = recorteCentrado(src, asp);
+  entera = entera || !!repValida(L.rep);
+  const c = entera ? copiaCara(src, 1024) : recorteCentrado(src, asp), ia = c.height / c.width;
   const antes = guardarComoEstaba(w);
-  const r = w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, c };
+  const r = w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, c, aspectImg: entera ? ia : 0, tx: entera ? tx : undefined };
   if (src === video) sonGrabar(w.id, sb => sonDelRelleno(w, r, sb));   // con la cámara también graba el sonido de ahí (v10.17)
-  w.tex = texture(small(c)); w.vacio = false; L.uv = FULL.slice(); w.aspect = asp;
+  w.tex = texture(small(c)); w.vacio = false; w.aspect = entera ? ia : asp;
+  L.uv = !entera || repValida(L.rep) ? FULL.slice() : uvLlena(ia, asp);
+  if (repValida(L.rep)) L.rep = repDe(L.rep[0], ia);
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
@@ -640,9 +736,36 @@ function vaciarFoto() {
   const w = held.work;
   const antes = guardarComoEstaba(w);
   w.relleno = { texVieja: antes.texVieja, aspect: antes.aspect, vacioViejo: antes.vacioViejo, vaciar: true };
-  w.tex = texture(VACIO_IMG); w.vacio = true; held.L.uv = FULL.slice();
+  w.tex = texture(VACIO_IMG); w.vacio = true; held.L.uv = FULL.slice(); held.L.rep = undefined;
   buzz(12);
   showHint('vacía: soltala con ✓ para guardarla así');
+  ui();
+}
+// repetir la textura (v10.23, propuesta 8): cada toque cambia de cuánto es cada repetición: el paso de la grilla (o 1 m)
+// → la mitad → ... → 25 cm → estirada otra vez. Repetida, la imagen va entera (uv FULL); al volver a estirarla, el recorte
+// que llena la forma. Se guarda al soltar con ✓ (cancelar la deja como estaba).
+const REP_PASOS = [1, 0.5, 0.25];
+const repDe = (tw, a) => repValida([tw, clamp(tw * (a > 0 && Number.isFinite(a) ? a : 1), REP_MIN, 40)]);
+const repTxt = m => m >= 1 ? m + ' m' : Math.round(m * 100) + ' cm';
+function repetirPintar() {
+  const r = held && held.L ? repValida(held.L.rep) : held && repValida(held.work.rep);
+  const el = $('repetir');
+  el.textContent = r ? 'repite: ' + repTxt(r[0]) : 'repetir';
+  el.classList.toggle('on', !!r);
+}
+function repetir() {
+  if (!held || held.work.vacio || held.work.rota) return;
+  const L = cur(), w = held.work, a = w.aspect > 0 ? w.aspect : L.h / L.w;
+  const r = repValida(L.rep), i = r ? REP_PASOS.findIndex(x => Math.abs(x - r[0]) < 1e-3) : -1;
+  if (r && (i < 0 || i === REP_PASOS.length - 1)) {
+    L.rep = undefined; L.uv = uvLlena(a, L.h / L.w);
+    showHint('estirada (sin repetir)');
+  } else {
+    const tw = r ? REP_PASOS[i + 1] : grilla ? pasoGrilla : 1;
+    L.rep = repDe(tw, a); L.uv = FULL.slice();
+    showHint('se repite cada ' + repTxt(tw) + ' · agrandala (escalar) para que entren más');
+  }
+  buzz(10);
   ui();
 }
 // si se soltó sin ✓ (cancelar, la sala lo sacó de la mano...), vuelve a como estaba
@@ -682,7 +805,8 @@ let previewBloque = freshBloque();
 let bloqueOn = false;
 try { bloqueOn = localStorage.getItem('bloque') === '1'; } catch (e) {}
 const enMano = () => bloqueOn ? previewBloque : preview;     // la vista previa del ítem equipado
-const vacioEnMano = () => held ? !!held.work.vacio : bloqueOn;   // un bloque vacío: recortar es escalar (no hay imagen)
+// un bloque vacío: recortar es escalar (no hay imagen); con la textura repetida (v10.23) también (agrandarla suma baldosas)
+const vacioEnMano = () => held ? !!held.work.vacio || !!(held.L && held.L.rep) : bloqueOn;
 let held = null;            // { work, L }
 let mode = 'mover';
 const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : enMano(); };
@@ -690,7 +814,7 @@ const cur = () => { if (held && held.aim) finishAim(); return held ? held.L : en
 const heldDist = () => held && held.aim ? len(sub(held.work.c, pos)) : len(cur().c);
 
 function worldPose(b, L) {
-  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice(), d: dValida(L.d), cc: ccValida(L.cc) };
+  return { c: add(pos, toWorldV(b, L.c)), r: toWorldV(b, L.r), u: toWorldV(b, L.u), w: L.w, h: L.h, uv: L.uv.slice(), d: dValida(L.d), cc: ccValida(L.cc), rep: repValida(L.rep) };
 }
 
 // ---------- colisiones: las fotos son paredes y pisos ----------
@@ -842,13 +966,15 @@ function snapPose(p, P = pasoGrilla) {
     u = add(mul(up, Math.round(Math.cos(t))), mul(r0, Math.round(Math.sin(t))));
   }
   const r = cross(u, n);                             // así cross(r, u) = n (el lado de adelante no cambia)
-  // el lado más largo, al múltiplo de P más cercano (mínimo P); el otro sigue la proporción (una tira angosta no se estira)
+  // el lado más largo, al múltiplo de P más cercano (mínimo P); el otro sigue la proporción (una tira angosta no se estira).
+  // Repetida (v10.23) no se estira nada: los dos lados de a un paso
   const k = p.w >= p.h ? Math.max(P, snapP(p.w, P)) / p.w : Math.max(P, snapP(p.h, P)) / p.h;
-  const w = p.w * k, h = p.h * k;
+  const tile = !!repValida(p.rep);
+  const w = tile ? Math.max(P, snapP(p.w, P)) : p.w * k, h = tile ? Math.max(P, snapP(p.h, P)) : p.h * k;
   const c0 = sub(sub(p.c, mul(r, w / 2)), mul(u, h / 2));
   const corner = c0.map(v => snapP(v, P));
   const d = p.d > 0 ? dValida(snapP(p.d, P)) : undefined;   // la profundidad de una caja, de a un paso (o nada)
-  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d, cc: p.cc };
+  return { c: add(add(corner, mul(r, w / 2)), mul(u, h / 2)), r, u, w, h, uv: p.uv.slice(), d, cc: p.cc, rep: p.rep };
 }
 // guías: la grilla en 3D (de a pasoGrilla) alrededor de lo que tenés en la mano; se apaga del todo a GUIA_R de la foto
 // (alfa según la distancia a la foto: las líneas a GUIA_R o más ya no se ven, así que no se dibujan).
@@ -1066,9 +1192,9 @@ function ciMano() {
   return r;
 }
 // una copia de la imagen para la cara (a lo sumo 768 px: es lo que se guarda; la textura, a 512 como todas)
-function copiaCara(src) {
+function copiaCara(src, max = 768) {
   const sw = src.naturalWidth || src.videoWidth || src.width, sh = src.naturalHeight || src.videoHeight || src.height;
-  const k = Math.min(1, 768 / Math.max(sw, sh)), c = document.createElement('canvas');
+  const k = Math.min(1, max / Math.max(sw, sh)), c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
   c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
   return c;
@@ -1076,6 +1202,7 @@ function copiaCara(src) {
 let archivoCara = null;   // {i, held}: el selector de archivo se abrió para una cara (no para la foto)
 function elegirFotoCara() {
   if (!caraSel || !puedeFotoCara()) return;
+  if (tx.lista.length) { txAbrir({ cara: caraSel, held }); return; }   // con texturas guardadas: la hoja para elegir (v10.23)
   archivoCara = { i: caraSel, held };
   $('bloqueArchivo').click();   // en el iPhone: sacar foto / fototeca / archivos
 }
@@ -1179,7 +1306,10 @@ function fitUV(uv) {   // mantiene la ventana adentro de la imagen sin cambiar s
 // escalar (estirar) estira la imagen en x o en y. Con la grilla, los bordes caen en líneas de la grilla (de a un paso
 // desde la esquina, que ya está en un punto de la grilla) y solo se permite lo que queda igual al alinearlo: el lado más
 // largo en múltiplos del paso. Si no hay ninguna posición posible, el borde no se mueve (devuelve false).
-function stableGrilla(w, h, P = pasoGrilla) { const m = Math.max(w, h); return m >= P - 1e-6 && Math.abs(m - snapP(m, P)) < 1e-6; }
+function stableGrilla(w, h, P = pasoGrilla, tile = false) {
+  if (tile) return [w, h].every(m => m >= P - 1e-6 && Math.abs(m - snapP(m, P)) < 1e-6);   // repetida: los dos lados de a un paso
+  const m = Math.max(w, h); return m >= P - 1e-6 && Math.abs(m - snapP(m, P)) < 1e-6;
+}
 function bordesA(L, base, edges, a, bb, estirar, alinear) {
   const [u0, v0, u1, v1] = base.uv;
   const su = base.w / (u1 - u0), sv = base.h / (v1 - v0);
@@ -1208,7 +1338,7 @@ function bordesA(L, base, edges, a, bb, estirar, alinear) {
   const ta = edges.l ? clamp(a, ...lim.l) : edges.r ? clamp(a, ...lim.r) : 0, tb = edges.b ? clamp(bb, ...lim.b) : edges.t ? clamp(bb, ...lim.t) : 0;
   let mejor = null, costo = Infinity;
   for (const [l, r] of xs) for (const [b, t] of ys) {
-    if (alinear && !stableGrilla(r - l, t - b)) continue;
+    if (alinear && !stableGrilla(r - l, t - b, P, !!repValida(L.rep))) continue;
     const c = (edges.l ? Math.abs(l - ta) : edges.r ? Math.abs(r - ta) : 0) + (edges.b ? Math.abs(b - tb) : edges.t ? Math.abs(t - tb) : 0);
     if (c < costo - 1e-9) { costo = c; mejor = [l, r, b, t]; }
   }
@@ -1261,7 +1391,7 @@ function pick(w) {
 }
 function finishAim() {
   const w = held.work, b = basis();
-  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice(), d: w.d, cc: w.cc };
+  held.L = { c: toLocalV(b, sub(w.c, pos)), r: toLocalV(b, w.r), u: toLocalV(b, w.u), w: w.w, h: w.h, uv: w.uv.slice(), d: w.d, cc: w.cc, rep: w.rep };
   held.aim = null;
 }
 function stepAim(dt) {
@@ -1279,11 +1409,13 @@ function stepAim(dt) {
 function releaseHold() {
   const h = held, w = held && held.work;
   held = null;
+  txCerrar();
   ciDescartar(h, w);                                     // fotos de caras elegidas y no guardadas (sin ✓)
   if (w) { deshacerRelleno(w); if (sala.active) salaSoltado(w); }
   setMode('mover'); if (ajustando) setAjustar(false); ui();
 }
 function clearWorks() {
+  txCerrar();
   ciDescartar(held, held && held.work);
   held = null; caraSel = 0;
   for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); if (w.ci) ciBorrar(w.ci); }
@@ -1296,8 +1428,10 @@ function drop() {
   const w = held.work, ccAntes = w.cc, cgAntes = w.cg;
   Object.assign(w, heldPose(basis(), true));
   const relleno = w.relleno; w.relleno = null;
-  if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
+  if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = relleno.aspectImg || w.h / w.w; }
   // museo: si la cambiás otra vez antes de que se guarde, gana la última. Otra imagen (o vacía): el sonido era del lugar de la vieja
+  const txAntes = w.tx;
+  if (relleno) w.tx = relleno.vaciar || !sala.active ? undefined : salaTxValida(relleno.tx);   // otra imagen: ¿es una textura? (v10.23)
   if (relleno) {
     if (sala.active) salaSonBorrar(w);   // en la sala, el sonido de la imagen vieja se borra (si no tenía, no cuesta nada)
     w.imgN = (w.imgN || 0) + 1; w.son = null; w.so = undefined; w.sonPedido = null;
@@ -1309,13 +1443,15 @@ function drop() {
   ciAplicar(held, w, ccAntes);                           // las fotos de las caras (v10.21): antes de armar sus caras
   if (sala.active) w.cg = salaCg(w, cgAntes);            // en la sala (v10.22): las que ya están en la base; las nuevas suben después
   setBuf(w);
-  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc };
+  const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc, rep: w.rep };
   const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc) };   // cc sin 'o' + co (ver ccGuardar)
   if (sala.active) {
-    if (relleno && relleno.vaciar) salaVaciar(w);
+    if (relleno && relleno.vaciar) relleno.subida = salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
     else salaSavePose(w);
     salaCarasSubir(w, cgAntes);                          // las fotos nuevas de sus caras, y se borran las que ya no van
+    // la textura que tenía, si ya nadie la usa: recién cuando la imagen nueva (o la pose vacía) quedó en la base
+    if (txAntes && txAntes !== w.tx && relleno && relleno.subida) { const h = sala.hash; relleno.subida.then(() => salaTxQuizasBorrar(txAntes, h), () => {}); }
   } else if (relleno && relleno.vaciar) {
     store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, blob: null, vacio: true, son: null }); }).catch(() => {});
   } else {
@@ -1392,6 +1528,7 @@ function cieloBotones() {
   cieloBtns = k;
   $('cieloFoto').style.display = k[0] === '1' ? '' : 'none';
   $('opcCielo').style.display = k[2] === '1' ? '' : 'none';
+  modosArriba();                                         // "usar de cielo" puede pasar la edición a dos líneas
 }
 function bajarCielo() {
   const w = cieloObra();
@@ -1700,6 +1837,10 @@ function ui() {
   const vacio = holding && held.work.vacio;
   // con el bloque equipado (cámara guardada), "cámara" la abre para sacarle la foto; ya abierta, "sacar foto"
   show($('llenarFoto'), vacio); show($('vaciarFoto'), holding && !held.work.vacio);
+  // repetir la textura y guardarla en tu biblioteca (v10.23)
+  const conImagen = holding && !held.work.vacio && !held.work.rota;
+  show($('repetir'), conImagen); show($('aTextura'), conImagen);
+  if (conImagen) repetirPintar();
   cieloBotones();
   if (vacio) $('llenarFoto').textContent = camUp ? 'sacar foto' : camOn ? 'abriendo…' : 'cámara';
   $('girarCam').classList.toggle('ocupado', camStarting);
@@ -1707,7 +1848,15 @@ function ui() {
   show(trashBtn, started && holding);
   show(cancelBtn, started && holding);
   distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
+  modosArriba();
 }
+// la fila de ajustar va justo encima de la de edición (que puede ocupar dos líneas en un celu angosto: v10.23)
+function modosArriba() {
+  if (modesEl.style.display === 'none' || $('edicion').style.display === 'none') return;
+  const r = $('edicion').getBoundingClientRect();
+  if (r.height > 0) modesEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+}
+window.addEventListener('resize', () => modosArriba());
 
 shootBtn.addEventListener('click', shoot);
 dropBtn.addEventListener('click', drop);
@@ -1761,6 +1910,9 @@ $('guardarBloque').addEventListener('click', () => setBloque(false));
 $('camChica').addEventListener('click', () => setCam(true));
 $('llenarFoto').addEventListener('click', () => { if (camReady && video.videoWidth) llenarBloque(video); else if (!camOn) setCam(true); });
 $('vaciarFoto').addEventListener('click', vaciarFoto);
+$('repetir').addEventListener('click', repetir);
+$('aTextura').addEventListener('click', () => txGuardar());
+txIniciar();
 $('cieloFoto').addEventListener('click', usarDeCielo);
 $('opcCielo').addEventListener('click', bajarCielo);
 $('opcSonido').addEventListener('click', sonAlternar);
@@ -2080,6 +2232,7 @@ let abrirArchivoHasta = 0;
 canvas.addEventListener('click', () => {
   if (performance.now() > abrirArchivoHasta || !held) return;
   abrirArchivoHasta = 0; archivoCara = null;
+  if (tx.lista.length) { txAbrir({ held }); return; }   // con texturas guardadas: la hoja para elegir (v10.23)
   $('bloqueArchivo').click();   // en el iPhone abre el menú: sacar foto / fototeca / archivos
 });
 canvas.addEventListener('pointerup', endTouch);
@@ -2390,6 +2543,7 @@ const salaPrevia = salaGuardada();
 // el dibujo arranca ya, sin esperar a que cargue nada (si el guardado se traba, antes quedaba la pantalla vacía)
 requestAnimationFrame(frame);
 (salaPrevia ? salaEntrar(salaPrevia) : loadWorks()).catch(e => diag('carga: falló ' + (e && e.message || e)));
+txCargar();   // tus texturas (v10.23): aparte, no frena nada
 
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {

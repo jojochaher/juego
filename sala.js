@@ -17,6 +17,8 @@ const sala = {
   timer: null, ultimoEnvio: 0, ultimoEstado: '',
   chau: Promise.resolve(),         // el último "me fui" en viaje: hay que esperarlo antes de volver a avisar que estoy
   ultimoEvento: 0,                 // cuándo llegó algo por las conexiones en vivo (para detectar si se murieron)
+  txImgs: new Map(),               // texturas de esta sala (v10.23): clave → promesa de su imagen (se baja una vez)
+  txSubidas: new Set(),            // texturas que ya sé que están en la base de esta sala
 };
 
 // quién soy y de qué color (se guarda en el celu)
@@ -61,6 +63,7 @@ async function salaEntrar(hash) {
   clearWorks();
   sala.active = true; sala.hash = hash;
   sala.borradas.clear(); sala.gente.clear(); sala.cargando.clear();
+  sala.txImgs.clear(); sala.txSubidas.clear();
   sala.ultimoEstado = '';
   salaVistasCargar(hash);
   try { localStorage.setItem('sala', hash); } catch (e) {}
@@ -85,7 +88,7 @@ function salaSalir() {
   if (held) releaseHold();
   salaDejarDeSeguir('saliste');
   salaLlamar(false, true);
-  sala.active = false; sala.hash = null; sala.gente.clear();
+  sala.active = false; sala.hash = null; sala.gente.clear(); sala.txImgs.clear(); sala.txSubidas.clear();
   try { localStorage.removeItem('sala'); localStorage.removeItem('salaPass'); } catch (e) {}
   clearWorks();
   loadWorks().catch(() => {});
@@ -141,7 +144,9 @@ setInterval(() => {
 // iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15);
 // so: cuándo se grabó su sonido del lugar (v10.17; el sonido está en imgs/<id>~son); d: la profundidad de una caja (extruir, v10.19);
 // cc: qué lleva cada cara de la caja (v10.20; sin 'o': las caras con su propia foto las dice cg, v10.22, ver cgValida)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg'];
+// rep: la textura repetida, [ancho, alto] de cada repetición en metros (v10.23; los de antes la ven estirada);
+// tx: la imagen es una textura de la biblioteca, guardada una sola vez en imgs/tx-<tx> (v10.23; ver salaTxBajar)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg', 'rep', 'tx'];
 function soloPose(o) {
   const p = Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
   if ('cc' in p) { const cc = ccGuardar(p.cc); if (cc) p.cc = cc; else delete p.cc; }   // 'o' → m: así un v10.20/21 no la pierde entera
@@ -195,6 +200,7 @@ function salaUpsert(id, pose) {
   if (sala.idsSala) sala.idsSala.add(id);
   sala.borradas.delete(id);
   const w = works.find(x => x.id === id);
+  if (w) salaTxDeViejo(w, id, pose);
   if (w) {
     w.cielo = pose.cielo;                               // el cielo vale siempre lo de la base (también si la tengo en la mano)
     if (!w.subiendo) salaSonMarca(w, pose.so);          // y el sonido (salvo mientras subo una imagen mía: esa no tiene)
@@ -205,7 +211,7 @@ function salaUpsert(id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.d = pose.d; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so, tx = w.tx; Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.tx = tx; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
@@ -213,7 +219,7 @@ function salaUpsert(id, pose) {
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
     if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
-    Object.assign(w, soloPose(pose)); w.d = pose.d; salaCarasDe(w, pose);   // la profundidad y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
+    Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.tx = pose.tx; salaCarasDe(w, pose);   // la profundidad, la repetición, la textura y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     return;
@@ -222,7 +228,7 @@ function salaUpsert(id, pose) {
   if (sala.cargando.has(id)) { sala.cargando.set(id, pose); return; }
   sala.cargando.set(id, pose);
   const hashAlPedir = sala.hash;
-  fetch(salaUrl('imgs/' + id)).then(r => r.json()).then(src => new Promise((res, rej) => {
+  salaImgDe(id, pose).then(src => new Promise((res, rej) => {
     if (typeof src !== 'string') return rej(new Error('sin imagen'));
     const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = src;
   })).then(img => {
@@ -246,7 +252,7 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
   const ivPedido = pose.iv;
   const nPedido = w.subidaN;    // si mientras baja le subo una imagen mía, lo que baja ya no va
   const hashAlPedir = sala.hash;
-  fetch(salaUrl('imgs/' + id)).then(r => r.json()).then(src => new Promise((res, rej) => {
+  salaImgDe(id, pose).then(src => new Promise((res, rej) => {
     if (typeof src !== 'string') return rej(new Error('sin imagen'));
     const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = src;
   })).then(img => {
@@ -258,13 +264,15 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     if (!w.vacio && !cambiar) return;
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
-    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; salaCarasDe(w, ultima);
+    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.rep = ultima.rep; w.tx = ultima.tx; salaCarasDe(w, ultima);
     w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
     salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     if (ultima.iv && ultima.iv !== ivPedido) salaLlenarDeAfuera(w, id, ultima, 0, true);   // la cambiaron otra vez mientras bajaba
   }).catch(() => {
+    const ult = sala.cargando.get(id);
+    if (ult && typeof ult === 'object') pose = ult;      // si mientras bajaba llegó otra versión, se reintenta con esa
     sala.cargando.delete(id);
     // la imagen puede tardar en subir; si no aparece en ~15 s, se deja (queda vacío hasta el próximo estado completo)
     if (held && held.work === w) { w.llenadoAfuera = pose; return; }   // se reintenta al soltarlo
@@ -303,18 +311,22 @@ function salaShoot(o, canvas, w) {
   if (w) w.subiendo = true;   // mientras sube, soltarlo de nuevo no manda la pose (la manda esto al terminar, la del momento)
   const n = w ? (w.subidaN = (w.subidaN || 0) + 1) : 0;
   const ivMio = w ? w.iv : o.iv;   // la versión de MI imagen (lo que llegue mientras sube no la pisa)
+  const txMio = salaTxValida(w ? w.tx : o.tx);   // y si es una textura de la biblioteca (v10.23)
   const tarea = () => {
     if (w && w.subidaN !== n) return;                                  // otro cambio de imagen la reemplazó antes de subir
     if (!sala.active || sala.hash !== hashAlSubir) { if (w) w.subiendo = false; return; }   // te fuiste de la sala antes de que le tocara
     if (w && !works.includes(w)) { w.subiendo = false; return; }       // la borraste antes de que le tocara
-    return salaApi('imgs/' + o.id, 'PUT', src).then(() => {
+    // una textura de la biblioteca (v10.23): va una sola vez a imgs/tx-<clave> (si ya está, no sube nada) y la pose la nombra
+    const subir = txMio ? salaTxSubir(txMio, src, hashAlSubir) : salaApi('imgs/' + o.id, 'PUT', src);
+    return subir.then(() => {
       if (w && w.subidaN !== n) return;                                // la cambiaste o vaciaste mientras subía: manda el último
       if (w) w.subiendo = false;
       if (!sala.active || sala.hash !== hashAlSubir) return;          // te fuiste de la sala mientras subía
-      if (w && !works.includes(w)) return salaApi('imgs/' + o.id, 'DELETE');   // lo borraste mientras subía
+      if (w && !works.includes(w)) return txMio ? salaTxQuizasBorrar(txMio, hashAlSubir) : salaApi('imgs/' + o.id, 'DELETE');   // lo borraste mientras subía
       const p = soloPose(w || o); delete p.vacio;
       if (ivMio) p.iv = ivMio;
-      return salaApi('poses/' + o.id, 'PUT', p);
+      if (txMio) p.tx = txMio; else delete p.tx;
+      return salaApi('poses/' + o.id, 'PUT', p).then(() => txMio && salaApi('imgs/' + o.id, 'DELETE'));   // la imagen propia que tenía antes, si tenía
     });
   };
   const p = salaEnCola(w, tarea);
@@ -334,6 +346,7 @@ function salaSavePose(w) {
   const a = w.llenadoAfuera;   // otro le cambió la imagen mientras la tenía (y yo no): se respeta lo suyo
   if (a) {
     if (a.vacio) { p.vacio = true; delete p.iv; } else { p.vacio = false; if (a.iv) p.iv = a.iv; else delete p.iv; }
+    if (!a.vacio && a.tx) p.tx = a.tx; else delete p.tx;   // y su textura (v10.23)
     if (w.so) p.so = w.so; else delete p.so;   // el sonido va con su imagen (w.so sigue a la base: salaSonMarca)
   }
   salaApi('poses/' + w.id, 'PUT', p).catch(() => showHint('no se pudo guardar en la sala'));
@@ -342,18 +355,20 @@ function salaSavePose(w) {
 function salaSoltado(w) {
   if (!w.llenadoAfuera || !works.includes(w)) return;
   const p = w.llenadoAfuera; w.llenadoAfuera = null;
-  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; } }
+  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; } w.tx = undefined; w.rep = undefined; setBuf(w); }
   else if (w.vacio || (p.iv && p.iv !== w.iv)) salaLlenarDeAfuera(w, w.id, p, 0, true);
 }
 // le sacaste la imagen (v10.7): primero la pose vacía (así nadie la vuelve a pedir), después se borra la imagen
 function salaVaciar(w) {
   w.subidaN = (w.subidaN || 0) + 1; w.subiendo = false;   // si estaba subiendo una imagen, ya no va
   const n = w.subidaN, hash = sala.hash;
-  salaEnCola(w, () => {
+  const q = salaEnCola(w, () => {
     if (w.subidaN !== n || !sala.active || sala.hash !== hash || !works.includes(w)) return;   // otro cambio, otra sala o la borraste
-    const p = soloPose(w); p.vacio = true; delete p.iv; delete p.so;
+    const p = soloPose(w); p.vacio = true; delete p.iv; delete p.so; delete p.tx; delete p.rep;
     return salaApi('poses/' + w.id, 'PUT', p).then(() => salaApi('imgs/' + w.id, 'DELETE'));
-  }).catch(() => showHint('no se pudo vaciar en la sala'));
+  });
+  q.catch(() => showHint('no se pudo vaciar en la sala'));
+  return q;   // falla si no se pudo (así no se borra la textura que tenía: ver drop)
 }
 // el cielo (v10.15): solo el campo, así no pisa lo que otro esté moviendo. Si la foto ya no está en la base, las reglas
 // no lo dejan crear (una pose necesita c, r, u, w, h): no queda una pose a medias
@@ -362,6 +377,7 @@ function salaCielo(w) {
 }
 function salaRemove(w) {
   sala.borradas.add(w.id);
+  if (w.tx) salaTxQuizasBorrar(w.tx, sala.hash);         // su textura, si ya no la usa nadie (v10.23)
   // las fotos de sus caras (v10.22): las de su cg y cualquier otra imgs/<id>~c* (si un cliente viejo le sacó cg al moverla,
   // quedaban sueltas); las que todavía suben se borran solas
   const gs = new Set(cgLista(w.cg).filter(Boolean).map(g => 'imgs/' + w.id + '~c' + g)), hash = sala.hash;
@@ -372,6 +388,63 @@ function salaRemove(w) {
       for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.startsWith(w.id + '~c')) gs.add('imgs/' + k);
       return Promise.all([...gs].map(k => fetch(salaUrlDe(hash, k), { method: 'DELETE' }).catch(() => {})));
     });
+}
+
+// ---------- texturas compartidas (biblioteca de texturas, propuesta 8, v10.23) ----------
+// Un bloque llenado con una textura de tu biblioteca no sube su imagen a imgs/<id>: la textura va una sola vez a
+// imgs/tx-<clave> y la pose lleva tx = la clave. Los demás la bajan una vez por sala (salaTxBajar) para todos los bloques
+// que la usan: poner diez bloques con la misma textura no sube ni baja nada más. Cuando el último bloque que la usa la
+// cambia, se vacía o se borra, el que lo hizo borra la textura de la base (salaTxQuizasBorrar).
+// Un cliente de antes no sabe de tx: busca imgs/<id>, no la encuentra y no la muestra (reintenta) hasta actualizarse; si mueve el
+// bloque le saca tx (manda la pose sin él, con el mismo iv): el que lo ve se lo vuelve a poner (salaTxDeViejo).
+const salaTxValida = g => typeof g === 'string' && /^[a-z0-9]{4,12}$/.test(g) ? g : undefined;
+const salaTxUrl = g => 'imgs/tx-' + g;
+function salaTxBajar(g) {
+  let p = sala.txImgs.get(g);
+  if (p) return p;
+  p = fetch(salaUrl(salaTxUrl(g))).then(r => r.json()).then(src => { if (typeof src !== 'string') throw new Error('sin textura'); return src; });
+  sala.txImgs.set(g, p);
+  p.catch(() => { if (sala.txImgs.get(g) === p) sala.txImgs.delete(g); });   // si falló (o todavía no subió), la próxima vez se vuelve a pedir
+  return p;
+}
+// la imagen de una pose: la suya o, si es una textura, la de la sala
+const salaImgDe = (id, pose) => salaTxValida(pose && pose.tx) ? salaTxBajar(pose.tx) : fetch(salaUrl('imgs/' + id)).then(r => r.json());
+// ¿ya está en la base? Se mira siempre (otro pudo haberla borrado): las claves de imgs (shallow: sin bajar ninguna imagen)
+function salaTxSubir(g, src, hash) {
+  return fetch(salaUrlDe(hash, 'imgs') + '?shallow=true').then(r => r.json()).catch(() => null).then(ks => {
+    if (ks && typeof ks === 'object' && ks['tx-' + g]) return;   // ya está (la subí antes, o desde otro bloque)
+    return fetch(salaUrlDe(hash, salaTxUrl(g)), { method: 'PUT', body: JSON.stringify(src) }).then(r => { if (!r.ok) throw new Error('firebase ' + r.status); });
+  }).then(() => {
+    if (sala.hash !== hash) return;
+    sala.txSubidas.add(g);
+    if (!sala.txImgs.has(g)) sala.txImgs.set(g, Promise.resolve(src));   // la tengo: no hace falta bajarla
+  });
+}
+// ¿alguien de la sala usa todavía la textura g? (también las que bajan y lo que tengo en la mano sin soltar)
+function salaTxEnUso(g) {
+  if (works.some(w => w.tx === g || (w.relleno && w.relleno.tx === g))) return true;
+  for (const p of sala.cargando.values()) if (p && typeof p === 'object' && p.tx === g) return true;
+  return false;
+}
+// se borra solo si nadie la usa: ni acá ni en la base (las poses, sin imágenes, son chicas). Lo que otro tenga en la mano
+// sin soltar no se ve: si la suelta, salaTxSubir ve que no está y la vuelve a subir.
+function salaTxQuizasBorrar(g, hash) {
+  if (!salaTxValida(g)) return;
+  setTimeout(() => {                                     // un rato después: lo que estaba por llegar ya llegó
+    if (!sala.active || sala.hash !== hash || !sala.estadoVisto || salaTxEnUso(g)) return;
+    fetch(salaUrlDe(hash, 'poses')).then(r => r.json()).then(ps => {
+      if (!ps || typeof ps !== 'object' || Object.values(ps).some(p => p && p.tx === g)) return;
+      if (!sala.active || sala.hash !== hash || salaTxEnUso(g)) return;
+      sala.txSubidas.delete(g); sala.txImgs.delete(g);
+      return fetch(salaUrlDe(hash, salaTxUrl(g)), { method: 'DELETE' });
+    }).catch(() => {});
+  }, 3000);
+}
+// un cliente de antes movió un bloque con textura y le sacó tx (mandó la pose sin él, con la misma imagen: el mismo iv)
+function salaTxDeViejo(w, id, pose) {
+  if (!w.tx || pose.tx || pose.vacio || !pose.iv || pose.iv !== w.iv || w.subiendo) return;
+  pose.tx = w.tx;
+  salaApi('poses/' + id + '/tx', 'PUT', w.tx).catch(() => {});
 }
 
 // ---------- otra foto en una cara de la caja, en la sala (propuesta 7, parte 3b, v10.22) ----------
@@ -599,6 +672,8 @@ function salaHuellaPose(pose) {
   if ('d' in pose) { const d = dValida(pose.d); if (d) pose.d = d; else delete pose.d; }   // la profundidad de una caja (v10.19) o nada
   if ('cc' in pose) { const cc = ccValida(pose.cc); if (cc) pose.cc = cc; else delete pose.cc; }   // qué lleva cada cara (v10.20) o nada
   if ('cg' in pose) { const cg = cgValida(pose.cg); if (cg) pose.cg = cg; else delete pose.cg; }   // las fotos de sus caras (v10.22) o nada
+  if ('rep' in pose) { const r = repValida(pose.rep); if (r) pose.rep = r; else delete pose.rep; }   // la textura repetida (v10.23) o nada
+  if ('tx' in pose && (!salaTxValida(pose.tx) || pose.vacio)) delete pose.tx;   // su imagen es una textura compartida (v10.23) o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -743,6 +818,7 @@ function salaEnviarPresencia() {
     if (L.d) est.m.push(r3(L.d));                     // una caja (v10.19): su profundidad (los de antes leen 15 y la ven plana)
     const cc = L.d && ccGuardar(L.cc); if (cc) est.mc = cc;   // y qué lleva cada cara (v10.20; sin 'o', como en la pose)
     if (L.d && held) { let mo = 0; for (let i = 1; i <= 5; i++) { const e = (ccValida(L.cc) || '')[i - 1] === 'o' && ciVer(i); if (e && e.subida) mo |= 1 << (i - 1); } if (mo) est.mo = mo; }   // las caras con su foto que ya está en la base (v10.22)
+    const rp = repValida(L.rep); if (rp) est.mr = rp;   // la textura repetida (v10.23)
     if (held) est.mid = held.work.id;
   }
   const s = JSON.stringify(est);
@@ -798,7 +874,7 @@ function salaPersona(id, d) {
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
-    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, cc: ccConFotos(ccValida(d.mc), d.mo), mid: d.mid || null };
+    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, cc: ccConFotos(ccValida(d.mc), d.mo), rep: repValida(d.mr), mid: d.mid || null };
     if (!p.mano || p.mano.mid !== t.mid) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };
     p.manoT = t;
     if (salto) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };   // lo que tiene en la mano también salta
@@ -892,8 +968,8 @@ function salaManoDe(id, p, k) {
     if (p.mano) {
       const T = p.manoT, M = p.mano;
       for (let i = 0; i < 3; i++) { M.c[i] += (T.c[i] - M.c[i]) * k; M.r[i] += (T.r[i] - M.r[i]) * k; M.u[i] += (T.u[i] - M.u[i]) * k; }
-      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv; M.d = (M.d || 0) + ((T.d || 0) - (M.d || 0)) * k; M.cc = T.cc;
-      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d, cc: M.cc };
+      M.w += (T.w - M.w) * k; M.h += (T.h - M.h) * k; M.uv = T.uv; M.d = (M.d || 0) + ((T.d || 0) - (M.d || 0)) * k; M.cc = T.cc; M.rep = T.rep;
+      const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d, cc: M.cc, rep: M.rep };
       if (M.mid) {
         const w = works.find(x => x.id === M.mid);
         if (w) drawFramed(pose, w.tex, p.col, null, w.ci);   // con las fotos de sus caras que tengo (v10.22)
@@ -1385,6 +1461,7 @@ async function salasDetalle(e) {
   const cuenta = document.getElementById('salasCuenta'); cuenta.textContent = ' · cargando…';
   let ids = [], sons = new Set(), bytes = 0, medidas = 0, midiendo = true, faltan = 0;
   const caras = new Map();   // id → las claves de las fotos de sus caras (imgs/<id>~c<clave>, v10.22)
+  const txContadas = new Map();   // las texturas compartidas ya sumadas (v10.23): clave → su imagen
   try { ids = Object.keys((await (await fetch(salaUrlDe(e.h, 'poses') + '?shallow=true')).json()) || {}); }
   catch (err) { cuenta.textContent = ' · no pude conectarme'; return; }
   try {   // qué fotos tienen sonido del lugar (imgs/<id>~son)
@@ -1431,11 +1508,18 @@ async function salasDetalle(e) {
     try {
       let src;
       try { src = await (await fetch(salaUrlDe(e.h, 'imgs/' + id))).json(); } catch (err) { faltan++; continue; }
+      let tg = null;   // un bloque con una textura compartida (v10.23): su imagen está en imgs/tx-<clave> (y pesa una vez)
+      if (typeof src !== 'string') try {
+        tg = salaTxValida(await (await fetch(salaUrlDe(e.h, 'poses/' + id + '/tx'))).json());
+        if (tg) src = txContadas.has(tg) ? txContadas.get(tg) : await (await fetch(salaUrlDe(e.h, salaTxUrl(tg)))).json();
+      } catch (err) { tg = null; }
       if (!vigente()) return;
       if (typeof src !== 'string') continue;
-      if (m.isConnected) { bytes += src.length; m.dataset.b = src.length; }
+      const yaContada = tg && txContadas.has(tg);
+      if (tg) txContadas.set(tg, src);
+      if (m.isConnected && !yaContada) { bytes += src.length; m.dataset.b = src.length; }
       medidas++; pintarCuenta();
-      if (!salasMedidas.has(e.h + '/' + id)) { salasMedidas.add(e.h + '/' + id); salaPesoMedido(src.length); }
+      if (!tg && !salasMedidas.has(e.h + '/' + id)) { salasMedidas.add(e.h + '/' + id); salaPesoMedido(src.length); }
       const img = new Image(); img.src = src; await img.decode();
       const c = document.createElement('canvas'), k = 168 / Math.min(img.width, img.height);
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
