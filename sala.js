@@ -438,9 +438,12 @@ function salaTxEnUso(g) {
 }
 // se borra solo si nadie la usa: ni acá ni en la base (las poses, sin imágenes, son chicas). Lo que otro tenga en la mano
 // sin soltar no se ve: si la suelta, salaTxSubir ve que no está y la vuelve a subir.
+const salaTxPend = new Set();                            // las que ya se van a mirar (borrar una pieza con diez bloques de la misma: una vez)
 function salaTxQuizasBorrar(g, hash) {
-  if (!salaTxValida(g)) return;
+  if (!salaTxValida(g) || salaTxPend.has(hash + g)) return;
+  salaTxPend.add(hash + g);
   setTimeout(() => {                                     // un rato después: lo que estaba por llegar ya llegó
+    salaTxPend.delete(hash + g);
     if (!sala.active || sala.hash !== hash || !sala.estadoVisto || salaTxEnUso(g)) return;
     fetch(salaUrlDe(hash, 'poses')).then(r => r.json()).then(ps => {
       if (!ps || typeof ps !== 'object' || Object.values(ps).some(p => p && p.tx === g)) return;

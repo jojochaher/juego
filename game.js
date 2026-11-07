@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.24';
+const VERSION = 'v10.25';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -484,7 +484,7 @@ function drawFramed(p, tex, color, deco = null, ci = undefined) {
   let n = norm(cross(p.r, p.u));
   if (dot(n, sub(p.c, pos)) < 0) n = mul(n, -1);         // hacia atrás de la foto
   const atras = add(p.c, mul(n, 0.004 * d));
-  drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);
+  if (color) drawQuad(scratch, quadData(atras, p.r, p.u, p.w + 2 * m, p.h + 2 * m), white, color);   // (sin color: sin borde, para la miniatura de una pieza)
   if (p.rep && !repValida(p.rep)) p = { ...p, rep: undefined };
   const tile = !!p.rep;                                  // la textura repetida (v10.23)
   drawQuad(scratch, quadData(p.c, p.r, p.u, p.w, p.h, uvDe(p)), tex, [1, 1, 1], 1, SIN_FADE, 0, tile);
@@ -2087,6 +2087,7 @@ window.addEventListener('keydown', e => {
     if (held) click(cancelBtn);
     else {
       for (const id of ['salaPanel', 'fovPanel', 'diag', 'salasPanel', 'opciones', 'comPanel', 'cuentaPanel']) { const el = $(id); if (el) el.style.display = 'none'; }
+      pzLibCerrar();
       if (pjVista) pjCerrar();
       $('menuBtn').classList.remove('on'); fovBtn.classList.remove('on');
     }
@@ -2407,7 +2408,7 @@ function draw(now) {
       pos[0] = cam.eye[0]; pos[1] = cam.eye[1]; pos[2] = cam.eye[2];
       escena(cam.b, dt, yo);
     } finally { pos[0] = yo[0]; pos[1] = yo[1]; pos[2] = yo[2]; FOVX = fovTuyo; }
-  } else escena(b, dt, null);
+  } else { escena(b, dt, null); if (pzFotoPide) pzFotoHacer(); }   // la miniatura de una pieza (v10.25): recién dibujado
   salaLejos(b);   // las caritas del borde (los de la sala que no se ven)
   sonPaso(b);     // el sonido del lugar de las fotos cercanas (v10.16)
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
@@ -2497,14 +2498,15 @@ function escena(b, dt, yo) {
   if (yo) { /* en el editor no se muestra lo que tenés en la mano */ }
   else if (held) {
     const p = heldPose(b);
-    if (grilla && !held.aim) guiasGrilla(p, [1, 1, 1]);   // las guías, de donde va a quedar
+    const foto = !!pzFotoPide;                           // la miniatura de una pieza (v10.25): sin guías, borde ni fantasmas
+    if (grilla && !held.aim && !foto) guiasGrilla(p, [1, 1, 1]);   // las guías, de donde va a quedar
     let tex = held.work.tex;
     if (held.work.vacio && camOn && camReady && video.readyState >= 2) {   // bloque vacío: muestra la cámara, para sacarle la foto
       gl.bindTexture(gl.TEXTURE_2D, videoTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
       tex = videoTex;
     }
-    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, [1, 1, 1], deco(), ciMano());
+    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, foto ? null : [1, 1, 1], foto ? null : deco(), ciMano());
     pzDibujarMano(b);                                    // las otras de la pieza (v10.24)
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
@@ -2519,7 +2521,7 @@ function escena(b, dt, yo) {
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)
-  if (held && !yo) {
+  if (held && !yo && !pzFotoPide) {
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     drawObra(held.work, 0.35);
@@ -2578,6 +2580,7 @@ const salaPrevia = salaGuardada();
 requestAnimationFrame(frame);
 (salaPrevia ? salaEntrar(salaPrevia) : loadWorks()).catch(e => diag('carga: falló ' + (e && e.message || e)));
 txCargar();   // tus texturas (v10.23): aparte, no frena nada
+pzLibCargar();   // tus piezas (v10.25): igual
 
 // para los tests (grados: yaw positivo = mirar a la derecha)
 window.__game = {
