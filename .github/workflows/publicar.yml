@@ -8,7 +8,7 @@ name: publicar
 on:
   push:
     branches: [main]
-    paths-ignore: ['CLAUDE.md', 'tests/**', '.gitignore', '.github/**']
+    paths-ignore: ['CLAUDE.md', 'HISTORIA.md', 'tests/**', '.gitignore', '.github/**']
   workflow_dispatch:
 
 permissions:
