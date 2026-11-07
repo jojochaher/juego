@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.26';
+const VERSION = 'v10.27';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -123,13 +123,16 @@ attribute vec3 p; attribute vec2 uv; uniform mat4 m; uniform vec3 eye; varying v
 void main() { v = uv; rel = (p - eye) / 16.0; gl_Position = m * vec4(p, 1.0); }`, `
 precision mediump float; uniform sampler2D t; uniform vec3 tint; uniform float alpha; uniform vec2 fade;
 #ifdef GL_FRAGMENT_PRECISION_HIGH
-varying highp vec2 v;
+varying highp vec2 v; uniform highp vec4 cuadro; uniform highp vec4 cuadroB;
 #else
-varying vec2 v;
+varying vec2 v; uniform vec4 cuadro; uniform vec4 cuadroB;
 #endif
-uniform vec3 niebla; uniform vec3 nieblaD; varying vec3 rel; uniform float rep;
+uniform vec3 niebla; uniform vec3 nieblaD; varying vec3 rel; uniform float rep; uniform float mezcla;
 void main() {
-  vec4 c = texture2D(t, rep > 0.5 ? fract(v) : v); if (c.a < 0.5) discard;
+  vec2 q = clamp(rep > 0.5 ? fract(v) : v, cuadroB.zw, 1.0 - cuadroB.zw);
+  vec4 c = texture2D(t, cuadro.xy + q * cuadro.zw);
+  if (mezcla > 0.0) c = mix(c, texture2D(t, cuadroB.xy + q * cuadro.zw), mezcla);
+  if (c.a < 0.5) discard;
   float f = smoothstep(nieblaD.x, nieblaD.y, length(rel) * 16.0) * nieblaD.z;
   gl_FragColor = vec4(mix(c.rgb * tint, niebla, f), alpha * mix(fade.x, fade.y, v.y));
 }`);
@@ -138,7 +141,15 @@ const Q = {
   m: gl.getUniformLocation(quadProg, 'm'), tint: gl.getUniformLocation(quadProg, 'tint'), alpha: gl.getUniformLocation(quadProg, 'alpha'), fade: gl.getUniformLocation(quadProg, 'fade'),
   eye: gl.getUniformLocation(quadProg, 'eye'), niebla: gl.getUniformLocation(quadProg, 'niebla'), nieblaD: gl.getUniformLocation(quadProg, 'nieblaD'),
   rep: gl.getUniformLocation(quadProg, 'rep'),
+  cuadro: gl.getUniformLocation(quadProg, 'cuadro'), cuadroB: gl.getUniformLocation(quadProg, 'cuadroB'), mezcla: gl.getUniformLocation(quadProg, 'mezcla'),
 };
+// cuadro / cuadroB / mezcla: qué pedazo de la textura es la imagen (los videos, v10.27: un cuadro de la tira, ver video.js).
+// Sin video: la textura entera. Quedan así salvo mientras se dibuja un video (cuadroUniformes(null) los vuelve).
+function cuadroUniformes(v) {
+  if (v) { gl.uniform4fv(Q.cuadro, v.a); gl.uniform4fv(Q.cuadroB, v.b); gl.uniform1f(Q.mezcla, v.m); }
+  else { gl.uniform4f(Q.cuadro, 0, 0, 1, 1); gl.uniform4f(Q.cuadroB, 0, 0, 0, 0); gl.uniform1f(Q.mezcla, 0); }
+}
+gl.useProgram(quadProg); cuadroUniformes(null);
 // (rel va dividido por 16: en el iPhone mediump es de 16 bits y el cuadrado de una distancia de 300 m no entraría)
 
 const dotProg = program(`
@@ -341,8 +352,10 @@ function drawQuad(buf, data, tex, tint, alpha = 1, fade = SIN_FADE, first = 0, r
 // una obra puesta: una foto (un cuadro) o una caja (6 caras en su buffer, cada una con su sombra)
 function drawObra(w, alpha = 1) {
   const tile = !!w.rep && !w.vacio;                      // la textura repetida (v10.23)
-  if (!w.caras) return drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile);
-  drawQuad(w.buf, null, w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile);   // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
+  const vv = vidCuadro(w);                               // un video cerca: el cuadro de ahora (v10.27)
+  if (vv) cuadroUniformes(vv);
+  if (!w.caras) { drawQuad(w.buf, null, vv ? vv.tex : w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile); if (vv) cuadroUniformes(null); return; }
+  drawQuad(w.buf, null, vv ? vv.tex : w.tex, [1, 1, 1], alpha, SIN_FADE, 0, tile);   // la de adelante arma todo (buffer, textura, alfa); las otras, solo su sombra
   let lisas = false, fotos = false;
   for (let i = 1; i < w.caras.length; i++) {
     const f = w.caras[i];
@@ -350,6 +363,7 @@ function drawObra(w, alpha = 1) {
     if (f.img) { fotos = true; continue; }
     gl.uniform3f(Q.tint, f.k, f.k, f.k); gl.drawArrays(gl.TRIANGLES, i * 6, 6);
   }
+  if (vv) cuadroUniformes(null);                         // las fotos propias de las caras y los colores, enteros
   if (fotos) gl.uniform1f(Q.rep, 0);                    // las fotos propias de las caras no se repiten
   if (fotos) for (let i = 1; i < w.caras.length; i++) {   // las que tienen su propia foto (v10.21)
     const f = w.caras[i];
@@ -1441,6 +1455,7 @@ function drop() {
   if (relleno) {
     if (sala.active) salaSonBorrar(w);   // en la sala, el sonido de la imagen vieja se borra (si no tenía, no cuesta nada)
     w.imgN = (w.imgN || 0) + 1; w.son = null; w.so = undefined; w.sonPedido = null;
+    vidQuitar(w);                                           // y el video (v10.27)
     relleno.imgN = w.imgN;                                  // si el sonido de la cámara llega después, se pega a esta imagen
   }
   const imgN = w.imgN;
@@ -1459,14 +1474,14 @@ function drop() {
     // la textura que tenía, si ya nadie la usa: recién cuando la imagen nueva (o la pose vacía) quedó en la base
     if (txAntes && txAntes !== w.tx && relleno && relleno.subida) { const h = sala.hash; relleno.subida.then(() => salaTxQuizasBorrar(txAntes, h), () => {}); }
   } else if (relleno && relleno.vaciar) {
-    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, blob: null, vacio: true, son: null }); }).catch(() => {});
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, blob: null, vacio: true, son: null, vid: null, vi: null }); }).catch(() => {});
   } else {
-    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo }); }).catch(() => {});
+    store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, ...(relleno ? { vid: null, vi: null } : {}) }); }).catch(() => {});
     // el bloque lleno: la imagen se agrega al registro que haya (si mientras tanto lo borraste, no lo revive)
     if (relleno) relleno.c.toBlob(blob => {
       if (!blob) { diag('bloque: no pude guardar la imagen'); return; }
       if (w.imgN !== imgN) return;   // mientras tanto la vaciaste o la cambiaste
-      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false, son: w.son || null }); }).catch(() => {});
+      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, blob, vacio: false, son: w.son || null, vid: null, vi: null }); }).catch(() => {});
     }, 'image/jpeg', 0.85);
     if (relleno && relleno.son) w.son = relleno.son;   // el sonido que grabó la cámara al llenarlo (lo guarda el put de arriba)
   }
@@ -1652,7 +1667,11 @@ async function loadWorksYa() {
     const img = new Image(); img.src = url;
     try {
       await Promise.race([img.decode(), new Promise((_, rej) => setTimeout(() => rej(new Error('tardó')), 5000))]);
-      if (!sala.active) { const w = addWork(o, img); if (o.son instanceof Blob && o.son.size) sonCopia(w, o.son); }
+      if (!sala.active) {
+        const w = addWork(o, img);
+        if (o.son instanceof Blob && o.son.size) sonCopia(w, o.son);
+        if (o.vid instanceof Blob && o.vid.size) vidCopia(w, o.vid, o.vi);   // su video (v10.27)
+      }
     } catch (e) { diag('museo: no pude abrir una foto (' + e.message + ')'); }
     img.src = ''; URL.revokeObjectURL(url);
     await new Promise(r => setTimeout(r, 0));
@@ -1768,6 +1787,8 @@ function shoot() {
   flash.style.transition = 'none'; flash.style.opacity = 0.7;
   requestAnimationFrame(() => { flash.style.transition = 'opacity 0.35s'; flash.style.opacity = 0; });
   buzz(15);
+  if (!vid.grabo) vidAvisar();                             // se puede mantener apretado: video (v10.27)
+  return w;
 }
 
 function buzz(ms) { if (navigator.vibrate) navigator.vibrate(ms); }
@@ -2072,7 +2093,7 @@ function tecladoMover() {
   return [x / l * rapido, y / l * rapido];
 }
 const ATAJOS = 'WASD/flechas: moverse (shift: más rápido) · mouse: mirar · clic: agarrar foto<br>' +
-  'C: cámara · B: bloque vacío · espacio: sacar foto o poner el bloque / soltar · esc: cancelar · supr: borrar · G: grilla<br>' +
+  'C: cámara · B: bloque vacío · espacio: sacar foto o poner el bloque / soltar · V (mantener): video · esc: cancelar · supr: borrar · G: grilla<br>' +
   '1: mover · 2: recortar · 3: escalar · 4: girar · 5: extruir · rueda: distancia · shift+rueda: tamaño · alt+rueda: girar · H: esta ayuda';
 const escribiendo = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 const visible = el => el.style.display !== 'none' && getComputedStyle(el).display !== 'none';
@@ -2098,10 +2119,11 @@ window.addEventListener('keydown', e => {
   else if (c === 'KeyB' && !held) click(bloqueOn ? $('guardarBloque') : $('bloque'));
   else if (c === 'KeyG') { if (visible($('edicion'))) grillaBtn.click(); }
   else if (c === 'KeyH') showHint(ATAJOS);
+  else if (c === 'KeyV' && vidPuede()) { vid.tecla = true; vidEmpezar('tecla'); }   // mantener V: video (v10.27)
   else if (/^Digit[1-5]$/.test(c)) { const m = ['mover', 'recortar', 'escalar', 'girar', 'extruir'][+c.slice(5) - 1]; if (visible($('edicion'))) { if (m !== 'mover' && !ajustando) setAjustar(true); setMode(m); showHint(MODE_HINT[m]); } }
   if (c.startsWith('Arrow')) e.preventDefault();
 });
-window.addEventListener('keyup', e => teclas.delete(e.code));
+window.addEventListener('keyup', e => { teclas.delete(e.code); if (e.code === 'KeyV' && vid.tecla) { vid.tecla = false; vidSoltar('tecla'); } });
 window.addEventListener('blur', () => teclas.clear());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
@@ -2413,6 +2435,7 @@ function draw(now) {
   desPaso(b, now);   // el desafío (v10.26): parado en la marca, cuánto se parece
   salaLejos(b);   // las caritas del borde (los de la sala que no se ven)
   sonPaso(b);     // el sonido del lugar de las fotos cercanas (v10.16)
+  vidPaso();      // qué videos se mueven (v10.27)
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
 }
 
@@ -2560,7 +2583,7 @@ async function checkUpdate() {
     const r = await fetch('game.js?t=' + Date.now(), { cache: 'no-store' });
     const mm = (await r.text()).match(/const VERSION = '([^']+)'/);
     // no recargar con dedos en pantalla, una foto en la mano, ni escribiendo un comentario o la cuenta (se perdería)
-    const ocupado = escribiendo() || ['comPanel', 'cuentaPanel'].some(id => $(id).style.display !== 'none') || comMandando || son.grabando;
+    const ocupado = escribiendo() || ['comPanel', 'cuentaPanel'].some(id => $(id).style.display !== 'none') || comMandando || son.grabando || vid.rec || vid.espera;
     if (mm && mm[1] !== VERSION && touches.size === 0 && !held && !ocupado) {
       if (sessionStorage.getItem('recargado') === mm[1]) return;
       sessionStorage.setItem('recargado', mm[1]);

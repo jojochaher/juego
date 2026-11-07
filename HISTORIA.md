@@ -197,3 +197,9 @@ Mantener al día: cuando cambia algo técnico, editar la parte que cambia (no re
   - El 0% se calcula contra ver solo el fondo (o el cielo): el museo vacío da 0 aunque la figura tenga colores oscuros.
   - Nada en la base: va en la presencia (los de antes la ignoran y nunca reescriben la de otro). Sin cambiar las reglas.
   - La revisión aparte encontró: que "ir a mirar"/"sumarme" de alguien que ya había terminado tiraba un error (ahora leen su desafío al tocar y la hoja abierta se actualiza), que empezar uno en una sala borraba el del museo (ahora uno por lugar), que el aviso se perdía si llegaba antes de tocar "entrar", que la hoja tapaba el menú ☰, que abrir la hoja en la sala leía todas las miniaturas cada vez (ahora una vez por foto), que se podía elegir una foto que todavía subía, que con cielo el 0% no era "no tener nada", que dos marcas en el mismo lugar titilaban y que al terminar el tuyo te avisaba que "proponía" quien se había sumado.
+
+## v10.27 (7 nov 2026): videos cortos, parte 1 (propuesta 6, idea de José del 5 nov: "pueden ser videos con mucha compresión tal vez")
+- Mantener apretado el disparador saca la foto y graba hasta 3 s; queda en loop en la foto y se mueve solo cerca (las 4 más cercanas).
+- No es un video de verdad: es una tira de cuadros JPEG (8 por segundo, 240 px). Así anda igual en todos los navegadores (MediaRecorder de video en Safari, y pasar un <video> a WebGL en cada cuadro, son caros y frágiles en iPhone), pesa poco (~100-200 KB los 3 s) y la placa tiene la tira entera: dibujarla es elegir el pedazo. El shader mezcla cada cuadro con el siguiente, para que 8 por segundo no se vean a los saltos y el loop no tenga corte.
+- Los cuadros por segundo se miden (con el celu ocupado el reloj se atrasa): así el loop dura lo que duró de verdad.
+- Se partió en dos porque toca la sala: la parte 1 es el museo (en la sala, mantener apretado saca una foto común).

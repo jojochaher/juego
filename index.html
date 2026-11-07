@@ -79,6 +79,9 @@
   }
   #shoot::after { content: ''; width: 54px; height: 54px; border-radius: 50%; background: #fff; }
   #shoot:active::after { transform: scale(0.88); }
+  #shoot.grabando { border-color: #ff3b30; animation: vidLatir 1s ease-in-out infinite; }
+  #shoot.grabando::after { background: #ff3b30; border-radius: 9px; width: 30px; height: 30px; }
+  @keyframes vidLatir { 50% { box-shadow: 0 0 0 7px rgba(255,59,48,0.35); } }
   #drop {
     right: 26px; bottom: calc(46px + env(safe-area-inset-bottom));
     width: 72px; height: 72px; background: rgba(255,255,255,0.92); color: #111; font-size: 32px; font-weight: 600;
@@ -434,6 +437,7 @@
 <script src="personaje.js"></script>
 <script src="voz.js"></script>
 <script src="sonido.js"></script>
+<script src="video.js"></script>
 <script src="comentarios.js"></script>
 <script src="textura.js"></script>
 <script src="pieza.js"></script>
