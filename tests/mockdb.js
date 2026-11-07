@@ -20,7 +20,16 @@ function allowed(p, uid, method, body) { // reglas (ver firebase-rules.json)
   const admin = uid && uid === ADMIN;
   if (p[0] === 'salas') {
     if (admin) return true;
-    return p.length >= 2 && p[1].length === 64 && (p.length < 3 || ['poses', 'imgs', 'gente', 'rtc'].includes(p[2]));
+    if (!(p.length >= 2 && p[1].length === 64 && (p.length < 3 || ['poses', 'imgs', 'gente', 'rtc'].includes(p[2])))) return false;
+    // poses/$id: ".validate": "newData.hasChildren(['c', 'r', 'u', 'w', 'h'])" (un campo suelto de una pose que ya no está no la crea)
+    if (p[2] === 'poses' && p.length >= 4 && (method === 'PUT' || method === 'PATCH')) {
+      let v; try { v = JSON.parse(body); } catch (e) { return false; }
+      if (p.length === 4 && method === 'PUT') return v === null || (!!v && ['c', 'r', 'u', 'w', 'h'].every(k => k in v));
+      if (v === null && p.length > 4 && method === 'PUT') return true;
+      const ya = get(p.slice(0, 4));
+      return !!ya && ['c', 'r', 'u', 'w', 'h'].every(k => k in ya);
+    }
+    return true;
   }
   if (p[0] === 'comentarios') {
     if (admin && method !== 'POST') return true;

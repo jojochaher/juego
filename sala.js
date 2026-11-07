@@ -140,9 +140,13 @@ setInterval(() => {
 // ---------- obras compartidas ----------
 // iv: cuándo se cambió la imagen (v10.7); de: quién la puso y t0: cuándo (huellas, v10.12); cielo: si es el cielo (v10.15);
 // so: cuándo se grabó su sonido del lugar (v10.17; el sonido está en imgs/<id>~son); d: la profundidad de una caja (extruir, v10.19);
-// cc: qué lleva cada cara de la caja (v10.20)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc'];
-const soloPose = o => Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
+// cc: qué lleva cada cara de la caja (v10.20; sin 'o': las caras con su propia foto las dice cg, v10.22, ver cgValida)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg'];
+function soloPose(o) {
+  const p = Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
+  if ('cc' in p) { const cc = ccGuardar(p.cc); if (cc) p.cc = cc; else delete p.cc; }   // 'o' → m: así un v10.20/21 no la pierde entera
+  return p;
+}
 
 function salaCambioObras(path, data, type) {
   if (path === '/') {
@@ -201,7 +205,7 @@ function salaUpsert(id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.d = pose.d; w.cc = pose.cc; w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so; Object.assign(w, soloPose(pose)); w.d = pose.d; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
@@ -209,7 +213,7 @@ function salaUpsert(id, pose) {
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
     if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
-    Object.assign(w, soloPose(pose)); w.d = pose.d; w.cc = pose.cc;   // la profundidad y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
+    Object.assign(w, soloPose(pose)); w.d = pose.d; salaCarasDe(w, pose);   // la profundidad y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
     return;
@@ -254,7 +258,7 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     if (!w.vacio && !cambiar) return;
     gl.deleteTexture(w.tex); w.tex = texture(small(img));
     w.aspect = img.height / img.width; w.vacio = false;
-    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.cc = ultima.cc;
+    Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; salaCarasDe(w, ultima);
     w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
     salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
     if (!w.uv) w.uv = FULL.slice();
@@ -283,6 +287,7 @@ function salaQuitarLocal(id) {
   if (held && held.work === w) { releaseHold(); showHint('alguien borró la foto que tenías en la mano'); }
   works.splice(works.indexOf(w), 1);
   gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf);
+  if (w.ci) { ciBorrar(w.ci); w.ci = undefined; }
 }
 
 // llamadas desde game.js
@@ -357,8 +362,133 @@ function salaCielo(w) {
 }
 function salaRemove(w) {
   sala.borradas.add(w.id);
+  // las fotos de sus caras (v10.22): las de su cg y cualquier otra imgs/<id>~c* (si un cliente viejo le sacó cg al moverla,
+  // quedaban sueltas); las que todavía suben se borran solas
+  const gs = new Set(cgLista(w.cg).filter(Boolean).map(g => 'imgs/' + w.id + '~c' + g)), hash = sala.hash;
   salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {})
-    .then(() => salaApi('imgs/' + w.id + '~son', 'DELETE')).catch(() => {});   // su sonido, si tenía (aunque no lo sepa: un DELETE de nada no cuesta)
+    .then(() => salaApi('imgs/' + w.id + '~son', 'DELETE')).catch(() => {})   // su sonido, si tenía (aunque no lo sepa: un DELETE de nada no cuesta)
+    .then(() => fetch(salaUrlDe(hash, 'imgs') + '?shallow=true').then(r => r.json()).catch(() => null))
+    .then(o => {
+      for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.startsWith(w.id + '~c')) gs.add('imgs/' + k);
+      return Promise.all([...gs].map(k => fetch(salaUrlDe(hash, k), { method: 'DELETE' }).catch(() => {})));
+    });
+}
+
+// ---------- otra foto en una cara de la caja, en la sala (propuesta 7, parte 3b, v10.22) ----------
+// Cada imagen de cara va en imgs/<id>~c<clave> (dataURL JPEG, 768 px como mucho, como las fotos) y la pose lleva
+// cg = la clave de cada cara (cgValida). cg dice solo las que ya están en la base: al soltar, la pose sale enseguida con
+// las de antes y las nuevas se suben después en la cola de la foto (salaCarasSubir), que al terminar escribe solo el
+// campo poses/<id>/cg (como el cielo) y borra las que ya no van. Los demás las bajan al llegar la pose (salaCarasSync).
+// Clientes v10.20/21: ven esas caras con la misma imagen (cc va sin 'o'); si la mueven, le sacan cg (las imágenes quedan).
+const salaCaraUrl = (w, g) => 'imgs/' + w.id + '~c' + g;
+// cg de w con las caras que ya están en la base. antes: el cg que tenía; una cara que sigue con su foto pero cuya imagen
+// todavía no bajó (o no se pudo bajar) conserva su clave (si no, moverla apenas entrás le borraba la foto a todos)
+function salaCg(w, antes = w.cg) {
+  const cc = ccValida(w.cc) || 'mmmmm', a = [], prev = cgLista(antes);
+  for (let i = 1; i <= 5; i++) {
+    const e = cc[i - 1] === 'o' && w.ci && w.ci[i];
+    a.push(e ? (e.subida ? e.g : '') : cc[i - 1] === 'o' ? prev[i - 1] : '');
+  }
+  return cgValida(a.join(','));
+}
+// una imagen de cara mía que todavía no terminó de subir (con su cg): lo que llega no la saca
+const salaCaraMia = (w, e) => !!e && (e.enCola > 0 || (!e.subida && w.ciPend > 0));
+// llegó una pose: sus caras (mientras subo las mías, las que todavía no subieron se quedan)
+function salaCarasDe(w, pose) {
+  w.cg = cgValida(pose.cg);
+  let cc = ccConCg(pose.cc, w.cg);
+  if (w.ciPend && w.ci) {
+    const a = (cc || 'mmmmm').split('');
+    for (let i = 1; i <= 5; i++) if (salaCaraMia(w, w.ci[i])) a[i - 1] = 'o';
+    cc = ccValida(a.join(''));
+  }
+  w.cc = cc;
+  salaCarasSync(w);
+}
+// que w.ci sea lo que dice w.cg: las que faltan se bajan, las que sobran se borran (también su textura)
+function salaCarasSync(w) {
+  if (held && held.work === w) return;                   // la tengo en la mano: gana lo mío al soltar
+  const gs = cgLista(w.cg), viejo = w.ci || [], nuevo = [];
+  for (let i = 1; i <= 5; i++) {
+    const g = gs[i - 1], ya = viejo[i];
+    if (salaCaraMia(w, ya)) { nuevo[i] = ya; continue; }   // la mía, subiendo
+    if (!g) { nuevo[i] = null; continue; }
+    const e = viejo.find(x => x && x.g === g) || nuevo.find(x => x && x.g === g);
+    nuevo[i] = e || null;
+    if (!e) salaCaraBajar(w, g);
+  }
+  const usadas = new Set(nuevo.filter(Boolean));
+  ciBorrar(viejo.filter(e => e && !usadas.has(e)), usadas);
+  w.ci = usadas.size ? nuevo : undefined;
+}
+function salaCaraBajar(w, g, intento = 0) {
+  w.ciBajando = w.ciBajando || new Set();
+  if (w.ciBajando.has(g)) return;
+  w.ciBajando.add(g);
+  const hash = sala.hash;
+  const va = () => sala.active && sala.hash === hash && works.includes(w) && cgLista(w.cg).includes(g);
+  fetch(salaUrl(salaCaraUrl(w, g))).then(r => r.json()).then(src => new Promise((res, rej) => {
+    if (typeof src !== 'string' || src.length >= 400000 || !/^data:image\/(jpeg|png|webp);base64,/.test(src)) return rej(new Error(src === null ? 'todavía no está' : 'no es una imagen'));
+    const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('no la pude abrir')); img.src = src;
+  })).then(img => {
+    w.ciBajando.delete(g);
+    if (!va() || !(img.width > 0 && img.height > 0)) return;
+    const e = { tex: texture(small(img)), a: img.height / img.width, g, subida: true };
+    const gs = cgLista(w.cg), ci = w.ci || [];
+    let puse = false;
+    for (let i = 1; i <= 5; i++) if (gs[i - 1] === g && !(ci[i] && ci[i].g === g) && !salaCaraMia(w, ci[i])) {
+      if (ci[i] && !ci[i].subida && ci[i].tex && !(held && held.work === w) && !ci.some((x, j) => j !== i && x === ci[i])) gl.deleteTexture(ci[i].tex);   // una mía que no subió
+      ci[i] = e; puse = true;
+    }
+    if (!puse) { gl.deleteTexture(e.tex); return; }
+    w.ci = ci;
+    if (!(held && held.work === w)) setBuf(w);            // en la mano: se ve igual (ciVer) y al soltar se arma
+  }).catch(err => {
+    w.ciBajando.delete(g);
+    if (intento < 3) setTimeout(() => { if (va()) salaCaraBajar(w, g, intento + 1); }, 1500 * (intento + 1));
+    else diag(`caja ${String(w.id).slice(-6)}: no pude bajar la foto de una cara (${err && err.message || err})`);
+  });
+}
+// al soltar en la sala: subir las fotos nuevas de las caras (una vez cada una: "a todas" es una sola), después el campo
+// cg, y borrar de la base las que ya no van (las de cgAntes que no quedaron)
+function salaCarasSubir(w, cgAntes) {
+  const hash = sala.hash;
+  const nuevas = [...new Set((w.ci || []).filter(e => e && !e.subida && e.c))];
+  const quedan = new Set([...(w.ci || []).filter(Boolean).map(e => e.g), ...cgLista(w.cg)]);
+  const quitar = [...new Set(cgLista(cgAntes).filter(g => g && !quedan.has(g)))];
+  if (!nuevas.length && !quitar.length) return;
+  const sigue = () => sala.active && sala.hash === hash && works.includes(w) && !sala.borradas.has(w.id);
+  w.ciPend = (w.ciPend || 0) + 1;
+  for (const e of nuevas) e.enCola = (e.enCola || 0) + 1;   // hasta que se escriba su cg, lo que llegue no la saca
+  const subidas = [];
+  // si la borraron mientras subía (acá o desde otro celu) o te fuiste de la sala, lo que ya subió no queda suelto en la base
+  const borrar = gs => Promise.all(gs.map(g => fetch(salaUrlDe(hash, salaCaraUrl(w, g)), { method: 'DELETE' }).catch(() => {})));
+  const limpiar = () => borrar(subidas);
+  salaEnCola(w, async () => {
+    for (const e of nuevas) {
+      if (!sigue()) return limpiar();
+      if (e.subida || !e.c) continue;                    // la subió otra vuelta (soltaste dos veces seguidas)
+      if (!(w.ci || []).includes(e)) continue;           // mientras esperaba la volviste a cambiar
+      let src = e.c.toDataURL('image/jpeg', 0.8);
+      if (src.length >= 400000) src = e.c.toDataURL('image/jpeg', 0.6);
+      if (src.length >= 400000) { diag('caja: la foto de una cara es muy grande'); continue; }
+      await salaApi(salaCaraUrl(w, e.g), 'PUT', src);
+      subidas.push(e.g);
+      if (!sigue()) return limpiar();
+      e.subida = true; e.c = null;                        // ya está en la base (y no hace falta el lienzo)
+    }
+    if (!sigue()) return limpiar();
+    if (nuevas.length) {
+      w.cg = salaCg(w);
+      // si la borran justo ahora, las reglas no dejan escribir el campo (la pose ya no está): se borra lo que subió
+      try { await salaApi('poses/' + w.id + '/cg', 'PUT', w.cg || null); } catch (e) { if (!sigue()) return limpiar(); throw e; }
+      if (!sigue()) return limpiar();
+    }
+    // las que ya no van: las de antes y las que subieron pero mientras tanto se cambiaron (soltándola otra vez)
+    const ahora = new Set(cgLista(w.cg)), enUso = new Set((w.ci || []).filter(e => e && !e.subida).map(e => e.g));
+    await borrar([...new Set([...quitar, ...subidas])].filter(g => !ahora.has(g) && !enUso.has(g)));
+  }).catch(e => { diag('caja: no pude subir la foto de una cara (' + (e && e.message || e) + ')'); showHint('no se pudo subir la foto de la cara a la sala'); })
+    .then(() => { w.ciPend--; for (const e of nuevas) e.enCola--; });
 }
 
 // ---------- el sonido del lugar en la sala (propuesta 4, parte 2, v10.17) ----------
@@ -468,6 +598,7 @@ function salaHuellaPose(pose) {
   if ('so' in pose && !(Number.isFinite(pose.so) && pose.so > 0)) delete pose.so;   // el sonido (v10.17): cuándo se grabó o nada
   if ('d' in pose) { const d = dValida(pose.d); if (d) pose.d = d; else delete pose.d; }   // la profundidad de una caja (v10.19) o nada
   if ('cc' in pose) { const cc = ccValida(pose.cc); if (cc) pose.cc = cc; else delete pose.cc; }   // qué lleva cada cara (v10.20) o nada
+  if ('cg' in pose) { const cg = cgValida(pose.cg); if (cg) pose.cg = cg; else delete pose.cg; }   // las fotos de sus caras (v10.22) o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -610,7 +741,8 @@ function salaEnviarPresencia() {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
     if (L.d) est.m.push(r3(L.d));                     // una caja (v10.19): su profundidad (los de antes leen 15 y la ven plana)
-    const cc = L.d && ccValida(L.cc); if (cc) est.mc = cc;   // y qué lleva cada cara (v10.20)
+    const cc = L.d && ccGuardar(L.cc); if (cc) est.mc = cc;   // y qué lleva cada cara (v10.20; sin 'o', como en la pose)
+    if (L.d && held) { let mo = 0; for (let i = 1; i <= 5; i++) { const e = (ccValida(L.cc) || '')[i - 1] === 'o' && ciVer(i); if (e && e.subida) mo |= 1 << (i - 1); } if (mo) est.mo = mo; }   // las caras con su foto que ya está en la base (v10.22)
     if (held) est.mid = held.work.id;
   }
   const s = JSON.stringify(est);
@@ -666,7 +798,7 @@ function salaPersona(id, d) {
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
-    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, cc: ccValida(d.mc), mid: d.mid || null };
+    const t = { c: m.slice(0, 3), r: m.slice(3, 6), u: m.slice(6, 9), w: m[9], h: m[10], uv: m.slice(11, 15), d: dValida(m[15]) || 0, cc: ccConFotos(ccValida(d.mc), d.mo), mid: d.mid || null };
     if (!p.mano || p.mano.mid !== t.mid) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };
     p.manoT = t;
     if (salto) p.mano = { ...t, c: t.c.slice(), r: t.r.slice(), u: t.u.slice() };   // lo que tiene en la mano también salta
@@ -764,7 +896,7 @@ function salaManoDe(id, p, k) {
       const pose = { c: M.c, r: norm(M.r), u: norm(M.u), w: M.w, h: M.h, uv: M.uv, d: M.d, cc: M.cc };
       if (M.mid) {
         const w = works.find(x => x.id === M.mid);
-        if (w) drawFramed(pose, w.tex, p.col);
+        if (w) drawFramed(pose, w.tex, p.col, null, w.ci);   // con las fotos de sus caras que tengo (v10.22)
       } else {
         const v = p.cam && rtcVista(id);
         if (p.bq) drawFramed({ ...pose, uv: FULL }, texVacio(), p.col);
@@ -1252,19 +1384,25 @@ async function salasDetalle(e) {
   const fotos = document.getElementById('salasFotos'); fotos.innerHTML = '';
   const cuenta = document.getElementById('salasCuenta'); cuenta.textContent = ' · cargando…';
   let ids = [], sons = new Set(), bytes = 0, medidas = 0, midiendo = true, faltan = 0;
+  const caras = new Map();   // id → las claves de las fotos de sus caras (imgs/<id>~c<clave>, v10.22)
   try { ids = Object.keys((await (await fetch(salaUrlDe(e.h, 'poses') + '?shallow=true')).json()) || {}); }
   catch (err) { cuenta.textContent = ' · no pude conectarme'; return; }
   try {   // qué fotos tienen sonido del lugar (imgs/<id>~son)
     const o = await (await fetch(salaUrlDe(e.h, 'imgs') + '?shallow=true')).json();
-    for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.endsWith('~son')) sons.add(k.slice(0, -4));
+    for (const k of Object.keys(o && typeof o === 'object' ? o : {})) {
+      if (k.endsWith('~son')) sons.add(k.slice(0, -4));
+      const mc = /^(.+)~c([a-z0-9]+)$/.exec(k);
+      if (mc) caras.set(mc[1], [...(caras.get(mc[1]) || []), k]);
+    }
   } catch (err) { faltan++; }
   if (!vigente()) return;
   // lo que pesa de verdad: se suma a medida que bajan las miniaturas (los sonidos, estimados)
   const pintarCuenta = () => {
     if (!vigente()) return;   // otra sala ya está a la vista: no le piso la cabecera
-    const fin = !midiendo, pesa = bytes + sons.size * SALA_PESO_SON;
+    let nc = 0; for (const ks of caras.values()) nc += ks.length;   // las fotos de las caras: estimadas, como los sonidos
+    const fin = !midiendo, pesa = bytes + sons.size * SALA_PESO_SON + nc * salaPesoFoto();
     cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}` +
-      (fin ? (pesa ? ` · ${sons.size || faltan ? '≈ ' : ''}${salaMB(pesa)}` : '') : medidas ? ` · midiendo… ${salaMB(pesa)}` : '');
+      (fin ? (pesa ? ` · ${sons.size || nc || faltan ? '≈ ' : ''}${salaMB(pesa)}` : '') : medidas ? ` · midiendo… ${salaMB(pesa)}` : '');
   };
   pintarCuenta();
   for (const id of ids) {
@@ -1276,9 +1414,10 @@ async function salasDetalle(e) {
         await fetch(salaUrlDe(e.h, 'poses/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id + '~son'), { method: 'DELETE' }).catch(() => {});   // su sonido del lugar, si tenía
+        for (const k of caras.get(id) || []) await fetch(salaUrlDe(e.h, 'imgs/' + k), { method: 'DELETE' }).catch(() => {});   // las fotos de sus caras
         m.remove(); ids = ids.filter(i => i !== id);
         if (m.dataset.b) bytes -= +m.dataset.b;
-        sons.delete(id);
+        sons.delete(id); caras.delete(id);
         pintarCuenta();
       } catch (err) { m.style.opacity = 1; showHint('no se pudo borrar'); }
     });

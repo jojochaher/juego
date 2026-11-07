@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.21';
+const VERSION = 'v10.22';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -321,6 +321,19 @@ function ccConFotos(cc, co) {
   for (let i = 0; i < 5; i++) if (co & (1 << i)) a[i] = 'o';
   return ccValida(a.join(''));
 }
+// en la sala (v10.22) va igual: cc sin 'o' y cg = la imagen de cada cara, 5 claves separadas por coma ('' = sin foto
+// propia); la imagen está en imgs/<id>~c<clave>. "a todas" usa la misma clave en las 5 (se sube y se baja una vez)
+function cgValida(s) {
+  if (typeof s !== 'string' || s.length > 70) return undefined;
+  const a = s.split(',');
+  return a.length === 5 && a.every(g => /^[a-z0-9]{0,12}$/.test(g)) && a.some(Boolean) ? s : undefined;
+}
+const cgLista = cg => (cgValida(cg) || ',,,,').split(',');
+function ccConCg(cc, cg) {
+  const a = (ccValida(cc) || 'mmmmm').replace(/o/g, 'm').split(''), gs = cgLista(cg);
+  for (let i = 0; i < 5; i++) if (gs[i]) a[i] = 'o';
+  return ccValida(a.join(''));
+}
 function ccValida(s) {
   if (typeof s !== 'string' || !/^[mebco]{5}$/.test(s)) return undefined;
   if (s[0] === 'b') s = 'm' + s.slice(1);
@@ -538,8 +551,10 @@ function addWork(o, img) {
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
   w.cc = ccConFotos(o.cc, o.co);                         // y qué lleva cada cara (v10.20; co: las que tienen su foto, v10.21)
+  if (sala.active && o.cg) { w.cg = cgValida(o.cg); w.cc = ccConCg(w.cc, w.cg); }   // en la sala: las fotos de sus caras (v10.22)
   setBuf(w);
   works.push(w);
+  if (w.cg) salaCarasSync(w);                            // bajarlas
   return w;
 }
 
@@ -1033,11 +1048,11 @@ if (caraOpsEl) $('caraFoto').addEventListener('click', () => elegirFotoCara());
 // otra foto en una cara (v10.21, propuesta 7, parte 3): en las opciones de la cara, "foto" abre cámara / galería (el
 // mismo selector que para llenar la foto) y esa imagen va en esa cara, recortada al centro con su forma (si cambia el
 // tamaño de la caja, se vuelve a recortar). Sirve también para llenar un bloque vacío extruido cara por cara. Solo con
-// algo en la mano y, por ahora, solo en el museo (en la sala: la parte que sigue). Mientras la tenés en la mano, lo
+// algo en la mano (en la sala desde v10.22: se sube al soltarla, salaCarasSubir). Mientras la tenés en la mano, lo
 // elegido está en held.ciN (cara → {tex, a, g, c}); se guarda al soltar con ✓ (ciAplicar) y cancelar lo descarta.
 // Museo: cada cara en su propio registro de IndexedDB '<id>~c<i>' = {id, obra, i, cara: blob, a, g} (los v10.20 no los
 // ven: no tienen blob ni vacio). g: las caras con la misma imagen ("a todas") la comparten al cargar (una textura).
-const puedeFotoCara = () => !!held && !held.aim && !sala.active;
+const puedeFotoCara = () => !!held && !held.aim;
 // la imagen de la cara i de lo que tenés en la mano: la elegida ahora o la que ya tenía
 function ciVer(i) {
   if (!held) return null;
@@ -1067,7 +1082,7 @@ function elegirFotoCara() {
 function llenarCara(src, i) {
   if (!puedeFotoCara() || !(i >= 1 && i <= 5)) return;
   const L = cur(), c = copiaCara(src);
-  const e = { tex: texture(small(c)), a: c.height / c.width, g: Math.random().toString(36).slice(2, 8), c };
+  const e = { tex: texture(small(c)), a: c.height / c.width, g: (Math.random().toString(36).slice(2) + '00000000').slice(0, 8), c };
   held.ciN = held.ciN || {}; held.ciN[i] = e;
   (held.ciCreadas = held.ciCreadas || []).push(e);
   const cc = (ccValida(L.cc) || 'mmmmm').split(''); cc[i - 1] = 'o'; L.cc = ccValida(cc.join(''));
@@ -1278,7 +1293,7 @@ function clearWorks() {
 function drop() {
   if (!held) return;
   cur();
-  const w = held.work, ccAntes = w.cc;
+  const w = held.work, ccAntes = w.cc, cgAntes = w.cg;
   Object.assign(w, heldPose(basis(), true));
   const relleno = w.relleno; w.relleno = null;
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = w.h / w.w; }
@@ -1292,6 +1307,7 @@ function drop() {
   if (relleno && !relleno.vaciar) w.iv = Date.now();     // imagen nueva: los demás de la sala la vuelven a bajar
   if (relleno) w.llenadoAfuera = null;                   // cambiaste la imagen vos: gana lo tuyo
   ciAplicar(held, w, ccAntes);                           // las fotos de las caras (v10.21): antes de armar sus caras
+  if (sala.active) w.cg = salaCg(w, cgAntes);            // en la sala (v10.22): las que ya están en la base; las nuevas suben después
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc };
   const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc) };   // cc sin 'o' + co (ver ccGuardar)
@@ -1299,6 +1315,7 @@ function drop() {
     if (relleno && relleno.vaciar) salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
     else salaSavePose(w);
+    salaCarasSubir(w, cgAntes);                          // las fotos nuevas de sus caras, y se borran las que ya no van
   } else if (relleno && relleno.vaciar) {
     store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => q.result && s.put({ ...q.result, ...poseMuseo, blob: null, vacio: true, son: null }); }).catch(() => {});
   } else {

@@ -1,7 +1,7 @@
 // extruir, parte 3 (v10.21, propuesta 7 de José): otra foto en una cara de la caja. En extruir, con una cara elegida,
 // "foto" abre cámara / galería y esa imagen va en esa cara (recortada al centro con su forma). Se guarda al soltar con ✓
 // (cancelar la descarta), cada cara en su registro '<id>~c<i>' del museo; "a todas" comparte la imagen; un bloque vacío
-// extruido se llena cara por cara. En la sala todavía no (la opción no aparece; 'o' que llega se ve como la misma).
+// extruido se llena cara por cara. La sala (v10.22) está en test46; acá solo que la opción aparece y una 'o' sin cg se ve como la misma.
 // uso: node tests/test45.js .
 const { chromium, devices } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
@@ -173,7 +173,7 @@ const DB = 'http://localhost:8452';
   ok('museo: sin errores de JS ' + pg.errs, pg.errs.length === 0);
   await ctx.close();
 
-  // ---------- sala: todavía no lleva fotos en las caras ----------
+  // ---------- sala (lo demás, en test46) ----------
   const URL = 'http://localhost:8451/?db=' + DB;
   const mk = async () => { const c = await b.newContext({ ...devices['Pixel 7'], permissions: ['camera', 'microphone'] }); const pg = await c.newPage(); pg.errs = []; pg.on('pageerror', e => pg.errs.push(e.message));
     await pg.goto(URL); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForFunction(() => window.__game.camReady, null, { timeout: 8000 }); return pg; };
@@ -187,14 +187,14 @@ const DB = 'http://localhost:8452';
   await espera(A, id => __game.sala.idsSala && __game.sala.idsSala.has(id), f1, 5000);
   await A.evaluate(id => pick(__game.works.find(w => w.id === id)), f1); await A.waitForTimeout(1200);
   await A.evaluate(() => { if (!ajustando) setAjustar(true); setMode('extruir'); caraSel = 2; pintarCaras(); });
-  ok('sala: con una cara elegida, sin "foto"', await visto(A, '#caraOps') && !(await visto(A, '#caraFoto')));
+  ok('sala: con una cara elegida, está "foto" (v10.22)', await visto(A, '#caraOps') && await visto(A, '#caraFoto'));
   await A.evaluate(() => cancelHold());
   const dd = (((await (await fetch(DB + '/__dump')).json()) || {}).salas || {})[H] || {};
   const pose = dd.poses && dd.poses[f1];
   ok('sala: la pose está en la base', !!pose);
   if (pose) {
     await fetch(DB + '/salas/' + H + '/poses/' + f1 + '.json', { method: 'PUT', body: JSON.stringify({ ...pose, cc: 'oommm' }) });
-    ok('sala: una "o" que llega se acepta y se ve como la misma', await espera(A, id => { const w = __game.works.find(x => x.id === id); return w && w.cc === 'oommm' && w.caras && w.caras[1].t === 'm' && !w.caras[1].img; }, f1, 5000));
+    ok('sala: una "o" que llega sin cg se ve como la misma', await espera(A, id => { const w = __game.works.find(x => x.id === id); return w && !w.cc && w.caras && w.caras[1].t === 'm' && !w.caras[1].img; }, f1, 5000));
   }
   ok('sala: sin errores de dibujo', !(await A.textContent('#hint')).includes('error'));
   ok('sala: sin errores de JS ' + A.errs, A.errs.length === 0);
