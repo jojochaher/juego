@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.25';
+const VERSION = 'v10.26';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -2026,6 +2026,7 @@ $('menuBtn').addEventListener('click', () => {
   const abrir = opcionesEl.style.display === 'none';
   for (const id of ['salaPanel', 'fovPanel', 'salasPanel', 'comPanel', 'cuentaPanel']) $(id).style.display = 'none';
   if (pjVista) pjCerrar();
+  pzLibCerrar(); desCerrar();   // (las hojas de abajo quedaban encima del menú)
   opcionesEl.style.display = abrir ? '' : 'none';
   $('menuBtn').classList.toggle('on', abrir);
 });
@@ -2087,7 +2088,7 @@ window.addEventListener('keydown', e => {
     if (held) click(cancelBtn);
     else {
       for (const id of ['salaPanel', 'fovPanel', 'diag', 'salasPanel', 'opciones', 'comPanel', 'cuentaPanel']) { const el = $(id); if (el) el.style.display = 'none'; }
-      pzLibCerrar();
+      pzLibCerrar(); desCerrar();
       if (pjVista) pjCerrar();
       $('menuBtn').classList.remove('on'); fovBtn.classList.remove('on');
     }
@@ -2409,6 +2410,7 @@ function draw(now) {
       escena(cam.b, dt, yo);
     } finally { pos[0] = yo[0]; pos[1] = yo[1]; pos[2] = yo[2]; FOVX = fovTuyo; }
   } else { escena(b, dt, null); if (pzFotoPide) pzFotoHacer(); }   // la miniatura de una pieza (v10.25): recién dibujado
+  desPaso(b, now);   // el desafío (v10.26): parado en la marca, cuánto se parece
   salaLejos(b);   // las caritas del borde (los de la sala que no se ven)
   sonPaso(b);     // el sonido del lugar de las fotos cercanas (v10.16)
   if (distPtr == null) distKnob.style.top = (1 - distT(heldDist())) * 100 + '%';
@@ -2490,6 +2492,7 @@ function escena(b, dt, yo) {
   gl.uniform3fv(Q.eye, pos); gl.uniform3fv(Q.niebla, atm); gl.uniform3fv(Q.nieblaD, NIEBLA);
   const otros = salaEnManos();   // las que tiene agarradas otro se dibujan en su mano
   for (const w of works) if ((!held || (w !== held.work && !pzEnMano(w))) && w !== cieloW && !otros.has(w.id) && !(yo && tapaAlPersonaje(w, yo, b))) drawObra(w);
+  if (!yo && !pzFotoPide) desDibujar();                  // las marcas del desafío en el piso (v10.26)
   salaDraw(b, dt);
   if (!yo) salaNuevasDibujar(b, dt);                     // lo nuevo desde tu última vez brilla (huellas, v10.12)
   if (yo) { salaB = b; pjDibujar('yo', pjYo(yo), b, Date.now() / 1000, rtcMiCara); }

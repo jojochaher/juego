@@ -235,6 +235,21 @@
   #pzHoja.quitando #pzLista img { outline: 2px solid rgba(255,90,70,0.95); outline-offset: -2px; opacity: 0.75; }
   #pzHoja .nota { font-size: 12px; color: rgba(255,255,255,0.6); }
   #pzQuitar.on { background: rgba(255,90,70,0.9); color: #fff; }
+  /* desafío (v10.26) */
+  #desHoja { max-height: 88vh; overflow-y: auto; }
+  #desImg { width: 120px; height: 120px; border-radius: 8px; flex: none; background: #2a2b33; }
+  #desHoja .desArriba { align-items: flex-start; flex-wrap: nowrap; }
+  #desTxt { font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.35; }
+  #desHoja .nota { font-size: 12px; color: rgba(255,255,255,0.6); }
+  .desFotosFila { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; }
+  .desFotosFila img { width: 52px; height: 52px; border-radius: 6px; flex: none; cursor: pointer; }
+  .desFotosFila img.on { outline: 2px solid #fff; outline-offset: -2px; }
+  #desGente .fila { margin-top: 4px; }
+  #desRef { position: fixed; right: 10px; top: calc(44px + env(safe-area-inset-top)); width: 52px; z-index: 3; cursor: pointer; }
+  #desRef img { width: 52px; height: 52px; border-radius: 8px; display: block; box-shadow: 0 0 0 1.5px rgba(255,255,255,0.7); }
+  #desRefPct { position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); font-size: 11px; padding: 1px 6px; border-radius: 8px; background: rgba(0,0,0,0.7); color: #fff; white-space: nowrap; }
+  #desRefPct.vivo { background: rgba(255,255,255,0.92); color: #111; font-weight: 600; }
+  #desMarco { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; border: 2px dashed rgba(255,255,255,0.55); border-radius: 4px; pointer-events: none; z-index: 2; }
   /* encontrarse: caritas en el borde con los que no se ven (v10.9) */
   #lejos { position: fixed; inset: 0; z-index: 3; pointer-events: none; }
   .lejos { position: absolute; left: 0; top: 0; width: 44px; height: 44px; margin: -22px 0 0 -22px; pointer-events: auto; touch-action: none; cursor: pointer; }
@@ -335,7 +350,7 @@
   <div class="fila"><b>opciones</b><div id="opcCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>
   <div class="fila"><div id="home" class="pill cierra">volver al inicio</div><div id="fov" class="pill cierra">campo de visión</div><div id="opcCielo" class="pill cierra" style="display:none">bajar el cielo</div></div>
   <div class="fila"><div id="gyroT" class="pill" style="display:none"></div><div id="inv" class="pill"></div><div id="opcSonido" class="pill"></div></div>
-  <div class="fila"><div class="pill abrirPersonaje cierra">tu personaje</div><div class="pill abrirSalas cierra">mis salas</div><div id="opcPiezas" class="pill cierra">tus piezas</div></div>
+  <div class="fila"><div class="pill abrirPersonaje cierra">tu personaje</div><div class="pill abrirSalas cierra">mis salas</div><div id="opcPiezas" class="pill cierra">tus piezas</div><div id="opcDesafio" class="pill cierra">desafío</div></div>
   <div class="fila"><div id="opcAtajos" class="pill cierra">atajos de teclado</div><div id="opcRegistro" class="pill cierra">registro</div></div>
   <div class="fila"><div id="opcComentario" class="pill cierra">dejar un comentario</div></div>
 </div>
@@ -349,6 +364,16 @@
   <div id="pzLista"></div>
   <div class="fila"><div id="pzQuitar" class="pill">quitar</div></div>
 </div>
+<div id="desHoja" class="hojaAbajo" style="display:none">
+  <div class="fila"><b>desafío</b><span id="desNota" class="nota"></span><div id="desCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>
+  <div class="fila desArriba"><img id="desImg" alt="la imagen a armar"><div id="desTxt" class="nota"></div></div>
+  <div id="desFotos" style="display:none"></div>
+  <div class="fila" id="desElegir"><div id="desOtra" class="pill">otra</div><div id="desEmpezar" class="pill blanco">empezar acá</div></div>
+  <div class="fila" id="desJugando" style="display:none"><div id="desMirar" class="pill blanco">mirar desde la marca</div><div id="desMarcaAca" class="pill">la marca acá</div><div id="desTerminar" class="pill">terminar</div></div>
+  <div id="desGente"></div>
+</div>
+<div id="desRef" style="display:none" aria-label="el desafío"><img id="desRefImg" alt=""><span id="desRefPct"></span></div>
+<div id="desMarco" style="display:none"></div>
 <div id="personajePanel" style="display:none">
   <div class="fila"><b>tu personaje</b><span class="nota">arrastrá para girar</span><div id="pjListo" class="pill blanco" style="margin-left:auto">listo</div></div>
   <div class="fila"><div class="pill" data-cuerpo="torso">con torso</div><div class="pill" data-cuerpo="sin">sin torso</div><span class="sep"></span><div class="pill" data-cabeza="esfera">esfera</div><div class="pill" data-cabeza="cubo">cubo</div></div>
@@ -412,6 +437,7 @@
 <script src="comentarios.js"></script>
 <script src="textura.js"></script>
 <script src="pieza.js"></script>
+<script src="desafio.js"></script>
 <script src="game.js"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

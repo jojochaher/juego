@@ -826,6 +826,7 @@ function salaEnviarPresencia() {
   if (!held && bloqueOn) est.bq = 1;
   if (salaSig) est.sg = salaSig.id;   // a quién sigo (v10.10): si me sigue a mí, no copiamos los giros en ronda
   if (salaLlamo > Date.now()) est.ll = salaLlamo;   // estoy llamando a los demás ("vengan", v10.11): hasta cuándo, como id del llamado
+  desPresencia(est);   // mi desafío (v10.26)
   if (L) {
     const r2 = v => Math.round(v * 100) / 100, r3 = v => Math.round(v * 1000) / 1000;
     est.m = [...L.c.map(r2), ...L.r.map(r3), ...L.u.map(r3), r3(L.w), r3(L.h), ...(L.uv || FULL).map(r3)];
@@ -900,6 +901,7 @@ function salaPersona(id, d) {
   if (!ll) p.llAviso = false;
   if (ll && salaLlAvisados.get(id) !== d.ll) { salaLlAvisados.set(id, d.ll); p.llAviso = true; diag('sala: me llama ' + id.slice(0, 4)); }
   p.ll = ll;
+  desLeer(id, p, d);   // su desafío (v10.26)
   pjLeer(p, d);
   const m = Array.isArray(d.m) && d.m.length >= 15 ? d.m : null;
   if (m) {
