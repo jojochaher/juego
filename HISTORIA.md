@@ -203,3 +203,8 @@ Mantener al día: cuando cambia algo técnico, editar la parte que cambia (no re
 - No es un video de verdad: es una tira de cuadros JPEG (8 por segundo, 240 px). Así anda igual en todos los navegadores (MediaRecorder de video en Safari, y pasar un <video> a WebGL en cada cuadro, son caros y frágiles en iPhone), pesa poco (~100-200 KB los 3 s) y la placa tiene la tira entera: dibujarla es elegir el pedazo. El shader mezcla cada cuadro con el siguiente, para que 8 por segundo no se vean a los saltos y el loop no tenga corte.
 - Los cuadros por segundo se miden (con el celu ocupado el reloj se atrasa): así el loop dura lo que duró de verdad.
 - Se partió en dos porque toca la sala: la parte 1 es el museo (en la sala, mantener apretado saca una foto común).
+
+## v10.28 (7 nov 2026): videos cortos en la sala (propuesta 6, parte 2; con esto la 6 queda entera)
+- Mantener apretado el disparador en la sala también graba. La tira va aparte de la foto (imgs/<id>~vid) y la pose lleva `vo` (escrito suelto, como `so`), así los demás la bajan recién al acercarse y no suma a lo que se baja al entrar (lo que más gasta de la base gratis). Sin cambiar las reglas: la tira entra en los 400 KB de imgs (VID_KB 280 KB ≈ 382 KB en base64).
+- Revisión aparte: no borrar la tira después de escribir vo (quedaba vo apuntando a nada si te ibas justo); borrar siempre la ~vid al cambiar/vaciar (un cliente viejo pudo sacarle vo y quedaba suelta); w.vidSube para que un eco viejo sin vo no le saque el video al que lo sube; las que no bajan no ocupan lugar entre las 4 que se mueven.
+- El aviso "mantené apretado el disparador" (ahora también en la sala) ya no tapa otro aviso que salió mientras tanto (tapaba "lo ven todos" del cielo).

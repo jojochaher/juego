@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.27';
+const VERSION = 'v10.28';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -651,6 +651,7 @@ function addWork(o, img) {
   if (Number.isFinite(o.t0)) w.t0 = o.t0;
   if (Number.isFinite(o.cielo)) w.cielo = o.cielo;       // es (o fue) el cielo (v10.15)
   if (Number.isFinite(o.so) && o.so > 0) w.so = o.so;    // tiene sonido del lugar en la sala (v10.17)
+  if (sala.active && !o.vacio) w.vo = salaVoValida(o.vo); // y video (v10.28): la tira se baja al acercarse
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
   w.rep = repValida(o.rep);                              // la textura repetida (biblioteca de texturas, v10.23)
   if (sala.active && !o.vacio) w.tx = salaTxValida(o.tx); // en la sala: su imagen es una textura compartida (v10.23)
@@ -1454,8 +1455,9 @@ function drop() {
   if (relleno) w.tx = relleno.vaciar || !sala.active ? undefined : salaTxValida(relleno.tx);   // otra imagen: ¿es una textura? (v10.23)
   if (relleno) {
     if (sala.active) salaSonBorrar(w);   // en la sala, el sonido de la imagen vieja se borra (si no tenía, no cuesta nada)
+    if (sala.active) salaVidBorrar(w);   // y su video (v10.28; aunque no sepa que tenía: un cliente viejo le pudo sacar vo)
     w.imgN = (w.imgN || 0) + 1; w.son = null; w.so = undefined; w.sonPedido = null;
-    vidQuitar(w);                                           // y el video (v10.27)
+    vidQuitar(w); w.vo = undefined; w.vidPedido = null;     // y el video (v10.27)
     relleno.imgN = w.imgN;                                  // si el sonido de la cámara llega después, se pega a esta imagen
   }
   const imgN = w.imgN;
@@ -1776,6 +1778,7 @@ function shoot() {
   if (sala.active) o.de = salaDe();
   const w = addWork(o, c);
   const subida = sala.active ? salaShoot(o, c) : null;
+  if (subida) w.subidaFoto = subida;                       // el video (v10.28) sube después de la foto
   if (!sala.active) c.toBlob(blob => store('readwrite', s => s.put({ ...o, blob })).catch(() => {}), 'image/jpeg', 0.85);
   // el sonido del lugar (v10.16; en la sala desde v10.17): 4 s desde que la sacaste; se pega a la foto si sigue siendo la misma imagen
   sonGrabar(o.id, sb => {

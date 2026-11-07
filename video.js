@@ -6,7 +6,8 @@
 // como una foto más, y la placa la tiene entera: dibujarla es elegir el pedazo del cuadro (cuadroUniformes en game.js; el
 // shader mezcla un cuadro con el siguiente para que 8 por segundo no se vean a los saltos, y el último con el primero).
 // vi = {n: cuadros, c: columnas, f: cuadros por segundo}; w.vid = la imagen (Blob). Cambiar o vaciar la imagen se lo saca.
-// Museo: en el registro de la obra van vid y vi. La sala todavía no (parte 2).
+// Museo: en el registro de la obra van vid y vi. Sala (v10.28): la tira va aparte, en imgs/<id>~vid, y la pose lleva vo;
+// los demás la bajan recién al acercarse (salaVidSubir / salaVidBajar en sala.js).
 // Ojo: nada de lo que corre al cargar puede usar cosas de game.js (solo adentro de funciones).
 const VID_FPS = 8, VID_MAX_MS = 3000, VID_MIN = 4, VID_MIN_MS = 600;   // menos que eso queda solo la foto
 const VID_ESPERA = 450;                               // cuánto hay que mantener apretado para que sea video
@@ -26,7 +27,7 @@ const vidRedondo = x => Math.max(16, Math.round(x / 16) * 16);   // de a 16 px: 
 
 // ---------- grabar ----------
 function vidPuede() {
-  return started && camOn && camReady && video.videoWidth > 0 && !held && !bloqueOn && !sala.active && !vid.rec;
+  return started && camOn && camReady && video.videoWidth > 0 && !held && !bloqueOn && !vid.rec;
 }
 function vidApretar(e) {
   if (e.button > 0 || vid.espera || vid.rec || !vidPuede()) return;
@@ -106,11 +107,12 @@ async function vidJpeg(tira) {
   }
   return null;   // ni con la peor calidad: queda la foto sola
 }
-// se pega a la foto si sigue siendo la misma imagen; en el museo se guarda en su registro
+// se pega a la foto si sigue siendo la misma imagen; en el museo se guarda en su registro, en la sala se sube
 function vidPegar(w, blob, vi, intento = 0) {
   if (!works.includes(w) || w.vacio || w.imgN || w.relleno) return;
   if (!intento) { w.vid = blob; w.vi = vi; vidOlvidar(w.id); }
-  if (sala.active || w.vid !== blob) return;
+  if (sala.active) { if (!intento && w.subidaFoto) salaVidSubir(w, blob, vi, w.subidaFoto); return; }
+  if (w.vid !== blob) return;
   store('readwrite', s => {
     const q = s.get(w.id);
     q.onsuccess = () => {
@@ -121,7 +123,7 @@ function vidPegar(w, blob, vi, intento = 0) {
 }
 // otra imagen o vaciarla: el video era de la vieja
 function vidQuitar(w) {
-  w.vid = null; w.vi = undefined;
+  w.vid = null; w.vi = undefined; w.vidSube = null;
   vidOlvidar(w.id);
 }
 // al cargar el museo: una copia en memoria (en WebKit un Blob de IndexedDB leído mucho después a veces ya no se lee)
@@ -133,10 +135,11 @@ function vidCopia(w, blob, vi) {
 }
 // en las primeras 2 fotos con la cámara, un aviso: se puede mantener apretado (en la compu, la V)
 function vidAvisar() {
-  if (vid.avisos >= 2 || sala.active) return;
+  if (vid.avisos >= 2) return;
   vid.avisos++;
   try { localStorage.setItem('vidAviso', String(vid.avisos)); } catch (e) {}
-  setTimeout(() => { if (!held && !vid.rec) showHint(matchMedia('(pointer: coarse)').matches ? 'mantené apretado el disparador: graba un video de hasta 3 s' : 'mantené apretada la V: graba un video de hasta 3 s'); }, 4600);
+  const antes = hint.innerHTML;   // si mientras tanto salió otro aviso (en la sala hay más), no lo tapa
+  setTimeout(() => { if (!held && !vid.rec && (hint.style.opacity === '0' || hint.innerHTML === antes)) showHint(matchMedia('(pointer: coarse)').matches ? 'mantené apretado el disparador: graba un video de hasta 3 s' : 'mantené apretada la V: graba un video de hasta 3 s'); }, 4600);
 }
 
 // ---------- mirar ----------
@@ -167,20 +170,22 @@ function vidCargar(w) {
   }).catch(err => { URL.revokeObjectURL(url); e.error = true; diag(`video ${String(w.id).slice(-6)}: no lo pude abrir (${err && err.name || err})`); });
   return e;
 }
-// cada cuadro (desde draw): cuáles se mueven. El cálculo cada 1/5 s.
+// cada cuadro (desde draw): cuáles se mueven. El cálculo cada 1/5 s. En la sala, las de los demás todavía no tienen la tira
+// (w.vo sin w.vid): se baja recién cuando está entre las que se mueven
 function vidPaso() {
   const ahora = performance.now();
   if (ahora - vid.t < 200) return;
   vid.t = ahora;
   const cerca = [];
   for (const w of works) {
-    if (!w.vid || !w.vi || w.rota || w.vacio || w === cieloW) continue;
+    const fallo = w.vidPedido && w.vo && w.vidPedido.t === w.vo.t && w.vidPedido.intentos >= 4 && !w.vidPedido.cargando;   // no baja: no ocupa lugar
+    if (!((w.vid && w.vi) || (sala.active && w.vo && !fallo)) || w.rota || w.vacio || w === cieloW) continue;
     const d = sonDist(w, pos);
     if (d < VID_LEJOS) cerca.push({ w, d });
   }
   cerca.sort((a, b) => a.d - b.d);
   vid.activos = new Set(cerca.slice(0, VID_MAX).map(o => o.w.id));
-  for (const o of cerca.slice(0, VID_MAX)) vidCargar(o.w);
+  for (const o of cerca.slice(0, VID_MAX)) if (o.w.vid && o.w.vi) vidCargar(o.w); else salaVidBajar(o.w);
   // en la placa: las que ya no están (o cambiaron) se borran, y de las otras quedan VID_CACHE
   const vivas = new Map(works.filter(w => w.vid).map(w => [w.id, w]));
   for (const [id, e] of [...vid.texs]) { const w = vivas.get(id); if (!w || w.vid !== e.blob) vidOlvidar(id); }

@@ -147,7 +147,8 @@ setInterval(() => {
 // rep: la textura repetida, [ancho, alto] de cada repetición en metros (v10.23; los de antes la ven estirada);
 // tx: la imagen es una textura de la biblioteca, guardada una sola vez en imgs/tx-<tx> (v10.23; ver salaTxBajar)
 // gr: es parte de una pieza (agrupar, v10.24): todas las de la misma gr se agarran y se mueven juntas (ver pieza.js)
-const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg', 'rep', 'tx', 'gr'];
+// vo: tiene video corto (v10.28): {t: cuándo se grabó, n, c, f: los de la tira}; la tira está en imgs/<id>~vid (ver salaVidSubir)
+const POSE_KEYS = ['c', 'r', 'u', 'w', 'h', 'uv', 'vacio', 'iv', 'de', 't0', 'cielo', 'so', 'd', 'cc', 'cg', 'rep', 'tx', 'gr', 'vo'];
 function soloPose(o) {
   const p = Object.fromEntries(POSE_KEYS.filter(k => o[k] !== undefined).map(k => [k, o[k]]));
   if ('cc' in p) { const cc = ccGuardar(p.cc); if (cc) p.cc = cc; else delete p.cc; }   // 'o' → m: así un v10.20/21 no la pierde entera
@@ -184,6 +185,15 @@ function salaCambioObras(path, data, type) {
     if (p && typeof p === 'object') { if (v === undefined) delete p.so; else p.so = v; }
     return;
   }
+  if (parts.length === 2 && parts[1] === 'vo') {      // el video (v10.28) también se escribe solo
+    const v = salaVoValida(data);
+    const w = works.find(x => x.id === id);
+    if (w && !w.subiendo) salaVidMarca(w, v);
+    if (w && w.llenadoAfuera) { if (v === undefined) delete w.llenadoAfuera.vo; else w.llenadoAfuera.vo = v; }
+    const p = sala.cargando.get(id);
+    if (p && typeof p === 'object') { if (v === undefined) delete p.vo; else p.vo = v; }
+    return;
+  }
   if (parts.length > 1) {                               // cambió un campo suelto: pedir la pose entera
     const hashAlPedir = sala.hash;
     fetch(salaUrl('poses/' + id)).then(r => r.json()).then(p => {
@@ -209,7 +219,7 @@ function salaUpsert(id, pose) {
 function salaUpsertYa(w, id, pose) {
   if (w) {
     w.cielo = pose.cielo;                               // el cielo vale siempre lo de la base (también si la tengo en la mano)
-    if (!w.subiendo) salaSonMarca(w, pose.so);          // y el sonido (salvo mientras subo una imagen mía: esa no tiene)
+    if (!w.subiendo) { salaSonMarca(w, pose.so); salaVidMarca(w, pose.vo); }   // y el sonido y el video (salvo mientras subo una imagen mía: esa no tiene)
     if (held && held.work === w) {                      // la estoy editando yo: gana la pose mía al soltar
       // pero si otro le cambió la imagen (la llenó, la cambió o la vació), se anota: al soltar se respeta (salvo que la hayas cambiado vos)
       const vacioAntes = w.relleno ? w.relleno.vacioViejo : w.vacio;
@@ -217,14 +227,14 @@ function salaUpsertYa(w, id, pose) {
       return;
     }
     if (w.subiendo) {                                   // estoy subiendo mi imagen nueva: de lo que llega solo vale la posición
-      const iv = w.iv, so = w.so, tx = w.tx; Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.gr = pose.gr; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.tx = tx; w.vacio = false; delete w.llenadoAfuera;
+      const iv = w.iv, so = w.so, vo = w.vo, tx = w.tx; Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.gr = pose.gr; salaCarasDe(w, pose); w.iv = iv; w.so = so; w.vo = vo; w.tx = tx; w.vacio = false; delete w.llenadoAfuera;
       if (!w.uv) w.uv = FULL.slice();
       setBuf(w); return;
     }
     if (pose.vacio && sala.cargando.has(id)) sala.cargando.set(id, pose);   // se estaba bajando una imagen que ya no va
     if (w.vacio && !pose.vacio) { salaLlenarDeAfuera(w, id, pose); return; }   // alguien le puso foto al bloque
     if (!w.vacio && !pose.vacio && pose.iv && pose.iv !== w.iv) { salaLlenarDeAfuera(w, id, pose, 0, true); return; }   // le cambiaron la imagen
-    if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; }   // la vaciaron
+    if (!w.vacio && pose.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; vidQuitar(w); w.vo = undefined; }   // la vaciaron
     Object.assign(w, soloPose(pose)); w.d = pose.d; w.rep = pose.rep; w.tx = pose.tx; w.gr = pose.gr; salaCarasDe(w, pose);   // la profundidad, la repetición, la textura y las caras (v10.19): sin d en la base, es plana (Object.assign no la saca)
     if (!w.uv) w.uv = FULL.slice();
     setBuf(w);
@@ -274,6 +284,7 @@ function salaLlenarDeAfuera(w, id, pose, intento = 0, cambiar = false) {
     Object.assign(w, soloPose(ultima)); w.vacio = false; w.d = ultima.d; w.rep = ultima.rep; w.tx = ultima.tx; w.gr = ultima.gr; salaCarasDe(w, ultima);
     w.imgN = (w.imgN || 0) + 1;                                          // otra imagen: un sonido mío que todavía graba ya no va
     salaSonMarca(w, ultima.so);                                          // otra imagen: el sonido que vale es el de esa pose
+    vidQuitar(w); w.vo = undefined; salaVidMarca(w, ultima.vo);          // y el video (v10.28): el mío que todavía no subió ya no va
     if (!w.uv) w.uv = FULL.slice();
     if (mia) Object.assign(w, mia);
     setBuf(w);
@@ -358,6 +369,7 @@ function salaSavePose(w) {
     if (a.vacio) { p.vacio = true; delete p.iv; } else { p.vacio = false; if (a.iv) p.iv = a.iv; else delete p.iv; }
     if (!a.vacio && a.tx) p.tx = a.tx; else delete p.tx;   // y su textura (v10.23)
     if (w.so) p.so = w.so; else delete p.so;   // el sonido va con su imagen (w.so sigue a la base: salaSonMarca)
+    if (w.vo) p.vo = w.vo; else delete p.vo;   // y el video (v10.28; w.vo sigue a la base: salaVidMarca)
   }
   salaApi('poses/' + w.id, 'PUT', p).catch(() => showHint('no se pudo guardar en la sala'));
 }
@@ -365,7 +377,7 @@ function salaSavePose(w) {
 function salaSoltado(w) {
   if (!w.llenadoAfuera || !works.includes(w)) return;
   const p = w.llenadoAfuera; w.llenadoAfuera = null;
-  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; } w.tx = undefined; w.rep = undefined; setBuf(w); }
+  if (p.vacio) { if (!w.vacio) { gl.deleteTexture(w.tex); w.tex = texture(VACIO_IMG); w.vacio = true; w.imgN = (w.imgN || 0) + 1; } w.tx = undefined; w.rep = undefined; vidQuitar(w); w.vo = undefined; setBuf(w); }
   else if (w.vacio || (p.iv && p.iv !== w.iv)) salaLlenarDeAfuera(w, w.id, p, 0, true);
 }
 // le sacaste la imagen (v10.7): primero la pose vacía (así nadie la vuelve a pedir), después se borra la imagen
@@ -374,7 +386,7 @@ function salaVaciar(w) {
   const n = w.subidaN, hash = sala.hash;
   const q = salaEnCola(w, () => {
     if (w.subidaN !== n || !sala.active || sala.hash !== hash || !works.includes(w)) return;   // otro cambio, otra sala o la borraste
-    const p = soloPose(w); p.vacio = true; delete p.iv; delete p.so; delete p.tx; delete p.rep;
+    const p = soloPose(w); p.vacio = true; delete p.iv; delete p.so; delete p.vo; delete p.tx; delete p.rep;
     return salaApi('poses/' + w.id, 'PUT', p).then(() => salaApi('imgs/' + w.id, 'DELETE'));
   });
   q.catch(() => showHint('no se pudo vaciar en la sala'));
@@ -393,6 +405,7 @@ function salaRemove(w) {
   const gs = new Set(cgLista(w.cg).filter(Boolean).map(g => 'imgs/' + w.id + '~c' + g)), hash = sala.hash;
   salaApi('poses/' + w.id, 'DELETE').then(() => salaApi('imgs/' + w.id, 'DELETE')).catch(() => {})
     .then(() => salaApi('imgs/' + w.id + '~son', 'DELETE')).catch(() => {})   // su sonido, si tenía (aunque no lo sepa: un DELETE de nada no cuesta)
+    .then(() => salaApi('imgs/' + w.id + '~vid', 'DELETE')).catch(() => {})   // y su video (v10.28)
     .then(() => fetch(salaUrlDe(hash, 'imgs') + '?shallow=true').then(r => r.json()).catch(() => null))
     .then(o => {
       for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.startsWith(w.id + '~c')) gs.add('imgs/' + k);
@@ -646,6 +659,85 @@ function salaSonBajar(w) {
   });
 }
 
+// ---------- videos cortos en la sala (propuesta 6, parte 2, v10.28) ----------
+// La tira de cuadros (video.js) va como dataURL JPEG en imgs/<id>~vid (< 400 KB: VID_KB la deja en ~380 KB como mucho) y
+// la pose lleva `vo` = {t: cuándo se grabó, n, c, f}, que se escribe solo (como `so`) después de subir la tira. Los demás
+// no la bajan al entrar: recién cuando está entre las VID_MAX más cercanas a menos de VID_LEJOS (salaVidBajar, desde
+// vidPaso), así no suma a lo que se baja por entrada. Otra imagen o vaciarla le saca `vo` y se borra la tira. Clientes
+// viejos (v10.27 o antes) sacan `vo` al mover la foto: queda quieta.
+const SALA_VID_MAX = 400000;
+function salaVoValida(vo) {
+  if (!vo || typeof vo !== 'object' || !(Number.isFinite(vo.t) && vo.t > 0)) return undefined;
+  const m = vidMetaValida(vo);
+  return m ? { t: vo.t, n: m.n, c: m.c, f: m.f } : undefined;
+}
+// lo que dice la base del video de w: si es otro (o ninguno), el que tenía ya no va. Uno mío que todavía sube (w.vidSube):
+// las poses sin vo que llegan mientras tanto (ecos de antes) no lo tocan, y el eco de su vo no lo hace bajar de nuevo
+function salaVidMarca(w, vo) {
+  vo = salaVoValida(vo);
+  if (w.vidSube && w.vid && (!vo || vo.t === w.vidSube.t)) { if (vo) w.vo = vo; return; }
+  if ((w.vo ? w.vo.t : 0) === (vo ? vo.t : 0)) { if (vo) w.vo = vo; return; }
+  vidQuitar(w);
+  w.vo = vo; w.vidPedido = null;
+}
+// subir el video recién grabado de w (después de su foto: antes = la subida de la foto)
+function salaVidSubir(w, blob, vi, antes) {
+  const hash = sala.hash, n = w.imgN || 0, vo = { t: Date.now(), n: vi.n, c: vi.c, f: vi.f };
+  const sigue = () => sala.active && sala.hash === hash && works.includes(w) && (w.imgN || 0) === n && !w.vacio && w.vid === blob && !sala.borradas.has(w.id);
+  const api = (p, method, body) => fetch(salaUrlDe(hash, p), { method, body: body === undefined ? undefined : JSON.stringify(body) }).then(r => { if (!r.ok) throw new Error('firebase ' + r.status); return r; });
+  const borrar = () => api('imgs/' + w.id + '~vid', 'DELETE').catch(() => {});   // si ya no va (la cambiaron, la borraron, te fuiste), no queda suelta
+  let fotoNo = false;
+  salaSonDataUrl(new Blob([blob], { type: 'image/jpeg' })).then(src => {
+    if (src.length >= SALA_VID_MAX) throw new Error('el video es muy grande');
+    return Promise.resolve(antes).catch(() => { fotoNo = true; }).then(() => fotoNo ? null : salaEnCola(w, () => {   // si la foto no subió, el video tampoco
+      if (!sigue()) return;
+      w.vidSube = vo;
+      const listo = () => { if (w.vidSube === vo) w.vidSube = null; };
+      return api('imgs/' + w.id + '~vid', 'PUT', src).then(() => {
+        if (!sigue()) { listo(); return borrar(); }
+        w.vo = vo; w.vidPedido = null;
+        diag(`video ${String(w.id).slice(-6)}: subido (${Math.round(src.length / 1024)} KB)`);
+        // escrito vo, la tira queda aunque mientras tanto cambie algo (el que la cambie o la borre, la borra)
+        return api('poses/' + w.id + '/vo', 'PUT', vo).then(listo, e => { listo(); if (!sigue()) return borrar(); throw e; });
+      }, e => { listo(); throw e; });
+    }));
+  }).catch(e => { diag('video: no lo pude subir a la sala (' + (e && e.message || e) + ')'); showHint('no se pudo subir el video a la sala: quedó la foto'); });
+}
+// otra imagen o vaciada: la tira vieja se borra (la pose nueva ya va sin `vo`)
+function salaVidBorrar(w) {
+  const hash = sala.hash;
+  salaEnCola(w, () => sala.active && sala.hash === hash && salaApi('imgs/' + w.id + '~vid', 'DELETE')).catch(() => {});
+}
+// lo que llega por la red: solo un JPEG en base64 (si no, nada)
+function salaVidBlob(src) {
+  if (typeof src !== 'string' || src.length >= SALA_VID_MAX) return null;
+  const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+=*)$/.exec(src);
+  if (!m) return null;
+  try {
+    const bin = atob(m[1]), a = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    return a.length > 500 && a[0] === 0xff && a[1] === 0xd8 ? new Blob([a], { type: 'image/jpeg' }) : null;
+  } catch (e) { return null; }
+}
+// bajar el video de una foto de la sala (al acercarse). Si todavía no subió, reintenta un par de veces
+function salaVidBajar(w) {
+  const vo = w.vo, e = w.vidPedido;
+  if (!vo || w.vid) return;
+  if (e && e.t === vo.t && (e.cargando || e.intentos >= 4 || performance.now() < e.desde)) return;
+  const p = w.vidPedido = { t: vo.t, cargando: true, intentos: e && e.t === vo.t ? e.intentos + 1 : 1, desde: 0 };
+  const hash = sala.hash;
+  fetch(salaUrl('imgs/' + w.id + '~vid')).then(r => r.json()).then(src => {
+    if (!sala.active || sala.hash !== hash || !works.includes(w) || w.vidPedido !== p || !w.vo || w.vo.t !== vo.t || w.vacio) return;
+    const b = salaVidBlob(src);
+    if (!b) throw new Error(src === null ? 'todavía no está' : 'no es un video');
+    w.vid = b; w.vi = { n: w.vo.n, c: w.vo.c, f: w.vo.f }; p.cargando = false;
+    diag(`video ${String(w.id).slice(-6)}: bajado (${Math.round(b.size / 1024)} KB)`);
+  }).catch(err => {
+    p.cargando = false; p.desde = performance.now() + 3000 * p.intentos;
+    if (p.intentos >= 4) diag(`video ${String(w.id).slice(-6)}: no lo pude bajar (${err && err.message || err})`);
+  });
+}
+
 // ---------- huellas (propuesta 2, parte 1, v10.12): quién puso cada foto y lo nuevo desde tu última vez ----------
 // Cada foto o bloque nuevo lleva en su pose `de` = {id, col, cu?, ca?, fa?} (quién lo puso: su color y su forma de
 // personaje) y `t0` (cuándo, en su reloj). El celu recuerda qué fotos viste de cada sala (localStorage 'vistas');
@@ -688,6 +780,7 @@ function salaHuellaPose(pose) {
   if ('rep' in pose) { const r = repValida(pose.rep); if (r) pose.rep = r; else delete pose.rep; }   // la textura repetida (v10.23) o nada
   if ('tx' in pose && (!salaTxValida(pose.tx) || pose.vacio)) delete pose.tx;   // su imagen es una textura compartida (v10.23) o nada
   if ('gr' in pose && !grValido(pose.gr)) delete pose.gr;   // la pieza de la que es parte (v10.24) o nada
+  if ('vo' in pose) { const v = salaVoValida(pose.vo); if (v && !pose.vacio) pose.vo = v; else delete pose.vo; }   // su video (v10.28) o nada
 }
 function salaVistasLeer() {
   try { const o = JSON.parse(localStorage.getItem('vistas') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -1351,7 +1444,7 @@ function salasLista() {
 // No hay forma de pedirle a Firebase el tamaño por REST: se cuenta cuántas imágenes y sonidos hay (?shallow=true,
 // solo las claves) y se estima con el peso medio de una foto, que se mide de verdad cada vez que se bajan las
 // miniaturas de una sala ('pesoFotos' = {n, b}). La cifra exacta está en la consola.
-const SALA_PESO_FOTO = 100000, SALA_PESO_SON = 16000, SALA_BASE_B = 1e9, SALA_BAJA_B = 10e9;
+const SALA_PESO_FOTO = 100000, SALA_PESO_SON = 16000, SALA_PESO_VID = 200000, SALA_BASE_B = 1e9, SALA_BAJA_B = 10e9;
 const SALA_CONSOLA = 'https://console.firebase.google.com/project/juego-dd2eb/database/juego-dd2eb-default-rtdb/usage';
 function salaPesoFoto() {
   try { const o = JSON.parse(localStorage.getItem('pesoFotos') || 'null'); if (o && o.n >= 3 && Number.isFinite(o.b / o.n) && o.b / o.n > 1000) return o.b / o.n; } catch (e) {}
@@ -1373,11 +1466,11 @@ function salaMB(b) {
   return t.replace('.', ',');
 }
 const salaPct = (b, de) => { const p = b / de * 100; return p < 0.1 ? 'menos del 0,1%' : (p < 10 ? p.toFixed(1) : Math.round(p)).toString().replace('.', ',') + '%'; };
-// claves de imgs/ de una sala → cuántas fotos y cuántos sonidos (imgs/<id>~son)
+// claves de imgs/ de una sala → cuántas fotos, cuántos sonidos (imgs/<id>~son) y cuántos videos (imgs/<id>~vid)
 function salaContarImgs(o) {
-  let f = 0, s = 0;
-  for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.endsWith('~son')) s++; else f++;
-  return { f, s, b: f * salaPesoFoto() + s * SALA_PESO_SON, bf: f * salaPesoFoto() };   // bf: lo que se baja al entrar (los sonidos, recién al acercarse)
+  let f = 0, s = 0, v = 0;
+  for (const k of Object.keys(o && typeof o === 'object' ? o : {})) if (k.endsWith('~son')) s++; else if (k.endsWith('~vid')) v++; else f++;
+  return { f, s, v, b: f * salaPesoFoto() + s * SALA_PESO_SON + v * SALA_PESO_VID, bf: f * salaPesoFoto() };   // bf: lo que se baja al entrar (los sonidos y los videos, recién al acercarse)
 }
 
 // todas las salas (admin): la lista sale de la base con el token de José; de las que no conozco
@@ -1448,10 +1541,10 @@ async function salasListaTodas(lista) {
     pesoTxt.textContent = (aprox || 'no pude contar ninguna') + (fin ? (fallas ? ` · ${fallas} sin contar` : '') : ` · contando ${contadas + fallas}/${hs.length}…`);
     if (fin && mayor && mayor.b > 0) {
       const veces = Math.floor(SALA_BAJA_B / mayor.b);
-      pesoBaja.textContent = `lo que más gasta es lo que se baja: cada vez que alguien entra a una sala baja todas sus fotos (los sonidos, recién al acercarse). ` +
+      pesoBaja.textContent = `lo que más gasta es lo que se baja: cada vez que alguien entra a una sala baja todas sus fotos (los sonidos y los videos, recién al acercarse). ` +
         `la más pesada es ${nombre(mayor.e)}, ≈ ${salaMB(mayor.b)} por entrada; el plan gratis deja bajar 10 GB por mes ` +
         `(${veces > 9999 ? 'más de 10.000' : '≈ ' + veces.toLocaleString('es-AR')} entradas a esa sala). ` +
-        `es una estimación: cada foto ≈ ${salaMB(salaPesoFoto())}, cada sonido ≈ ${salaMB(SALA_PESO_SON)}.`;
+        `es una estimación: cada foto ≈ ${salaMB(salaPesoFoto())}, cada sonido ≈ ${salaMB(SALA_PESO_SON)}, cada video ≈ ${salaMB(SALA_PESO_VID)}.`;
     }
   };
   for (const [h, el, e] of filas) {
@@ -1491,7 +1584,7 @@ async function salasDetalle(e) {
   const borrar = document.getElementById('salasBorrar'); borrar.textContent = 'borrar sala'; borrar.dataset.seguro = '';
   const fotos = document.getElementById('salasFotos'); fotos.innerHTML = '';
   const cuenta = document.getElementById('salasCuenta'); cuenta.textContent = ' · cargando…';
-  let ids = [], sons = new Set(), bytes = 0, medidas = 0, midiendo = true, faltan = 0;
+  let ids = [], sons = new Set(), vids = new Set(), bytes = 0, medidas = 0, midiendo = true, faltan = 0;
   const caras = new Map();   // id → las claves de las fotos de sus caras (imgs/<id>~c<clave>, v10.22)
   const txContadas = new Map();   // las texturas compartidas ya sumadas (v10.23): clave → su imagen
   try { ids = Object.keys((await (await fetch(salaUrlDe(e.h, 'poses') + '?shallow=true')).json()) || {}); }
@@ -1500,6 +1593,7 @@ async function salasDetalle(e) {
     const o = await (await fetch(salaUrlDe(e.h, 'imgs') + '?shallow=true')).json();
     for (const k of Object.keys(o && typeof o === 'object' ? o : {})) {
       if (k.endsWith('~son')) sons.add(k.slice(0, -4));
+      if (k.endsWith('~vid')) vids.add(k.slice(0, -4));   // y video (v10.28)
       const mc = /^(.+)~c([a-z0-9]+)$/.exec(k);
       if (mc) caras.set(mc[1], [...(caras.get(mc[1]) || []), k]);
     }
@@ -1509,9 +1603,9 @@ async function salasDetalle(e) {
   const pintarCuenta = () => {
     if (!vigente()) return;   // otra sala ya está a la vista: no le piso la cabecera
     let nc = 0; for (const ks of caras.values()) nc += ks.length;   // las fotos de las caras: estimadas, como los sonidos
-    const fin = !midiendo, pesa = bytes + sons.size * SALA_PESO_SON + nc * salaPesoFoto();
+    const fin = !midiendo, pesa = bytes + sons.size * SALA_PESO_SON + vids.size * SALA_PESO_VID + nc * salaPesoFoto();
     cuenta.textContent = ` · ${ids.length} foto${ids.length === 1 ? '' : 's'}` +
-      (fin ? (pesa ? ` · ${sons.size || nc || faltan ? '≈ ' : ''}${salaMB(pesa)}` : '') : medidas ? ` · midiendo… ${salaMB(pesa)}` : '');
+      (fin ? (pesa ? ` · ${sons.size || vids.size || nc || faltan ? '≈ ' : ''}${salaMB(pesa)}` : '') : medidas ? ` · midiendo… ${salaMB(pesa)}` : '');
   };
   pintarCuenta();
   for (const id of ids) {
@@ -1523,10 +1617,11 @@ async function salasDetalle(e) {
         await fetch(salaUrlDe(e.h, 'poses/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id), { method: 'DELETE' });
         await fetch(salaUrlDe(e.h, 'imgs/' + id + '~son'), { method: 'DELETE' }).catch(() => {});   // su sonido del lugar, si tenía
+        if (vids.has(id)) await fetch(salaUrlDe(e.h, 'imgs/' + id + '~vid'), { method: 'DELETE' }).catch(() => {});   // su video
         for (const k of caras.get(id) || []) await fetch(salaUrlDe(e.h, 'imgs/' + k), { method: 'DELETE' }).catch(() => {});   // las fotos de sus caras
         m.remove(); ids = ids.filter(i => i !== id);
         if (m.dataset.b) bytes -= +m.dataset.b;
-        sons.delete(id); caras.delete(id);
+        sons.delete(id); vids.delete(id); caras.delete(id);
         pintarCuenta();
       } catch (err) { m.style.opacity = 1; showHint('no se pudo borrar'); }
     });

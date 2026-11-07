@@ -1,7 +1,7 @@
 // videos cortos (v10.27, propuesta 6 parte 1: el museo): mantener apretado el disparador saca la foto y graba hasta 3 s
 // de video (una tira de cuadros JPEG); un toque corto sigue siendo solo foto; se mueve cerca (las 4 más cercanas), quieta
 // lejos; se guarda y vuelve al recargar; cambiar o vaciar la imagen se lo saca; con el bloque no graba; V en la compu;
-// en la sala todavía no graba.
+// en la sala también graba (v10.28).
 // uso: node tests/test51.js .
 const { chromium, devices } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path');
@@ -144,12 +144,12 @@ const ok = (n, c) => { if (!c) fallas++; console.log((c ? 'OK   ' : 'FAIL ') + n
   if (!quedo) console.log(await n(), nu, await ultima(), await pg.evaluate(() => diagLog ? JSON.stringify((typeof diagLog === 'function' ? diagLog() : diagLog).slice(-8)) : ''));
   ok('y queda la foto con lo que grabó', quedo);
 
-  // en la sala todavía no graba (parte 2): mantener apretado = una foto
+  // en la sala también graba (v10.28, parte 2; lo de la sala está en test52): mantener apretado = una foto con video
   await pg.tap('#salaBtn'); await pg.fill('#salaPass', 'prueba video'); await pg.tap('#salaEntrar');
   await espera(pg, () => __game.sala.active && __game.sala.estadoVisto);
   await conCam();
-  await apretar('#shoot', 1200);
-  ok('en la sala: mantener apretado saca una foto, sin video', await espera(pg, () => __game.works.length === 1, null, 3000) && !(await ultima()).vid);
+  await apretar('#shoot', 1600);
+  ok('en la sala: mantener apretado saca una foto (una sola) con video', await espera(pg, () => __game.works.length === 1, null, 3000) && await espera(pg, () => { const w = __game.works[0]; return w.vid && w.vi; }, null, 4000));
 
   ok('sin errores', !pg.errs.length && !/error/i.test(await pg.textContent('#hint')));
   if (pg.errs.length) console.log(pg.errs);
