@@ -87,6 +87,21 @@ const DB = 'http://localhost:8432';
   await pg.waitForTimeout(200);
   await pg.screenshot({ path: out + 'v10.19_caja_en_la_mano.png' });
   ok('en extruir se ven las aristas de la caja (las de atrás también)', await pg.evaluate(() => deco() && deco().modo === 'extruir'));
+  // v10.29: mientras arrastrás, la caja se ladea sola (~30°) para ver el costado; al soltar vuelve (solo el dibujo)
+  {
+    const x = vp.width / 2, y = vp.height * 0.45;
+    const L0 = await pg.evaluate(() => JSON.stringify(__game.held.L.r));
+    await T('touchStart', [[x, y]]);
+    for (let i = 1; i <= 6; i++) { await T('touchMove', [[x, y - i * 3]]); await pg.waitForTimeout(16); }
+    await pg.waitForTimeout(600);
+    const durante = await pg.evaluate(() => { const p = heldPose(basis()), q = ladeada(p, basis()); return { ladeo, ang: Math.acos(Math.max(-1, Math.min(1, p.r[0] * q.r[0] + p.r[1] * q.r[1] + p.r[2] * q.r[2]))) * 180 / Math.PI }; });
+    await pg.screenshot({ path: out + 'v10.29_ladeo.png' });
+    await T('touchEnd', []); await pg.waitForTimeout(900);
+    const despues = await pg.evaluate(() => ladeo);
+    ok('arrastrando, la caja se ladea ~30° ' + JSON.stringify(durante), durante.ladeo > 0.95 && Math.abs(durante.ang - 30) < 3);
+    ok('al soltar el dedo vuelve (' + despues + ') y la pose no cambió de giro', despues < 0.01 && (await pg.evaluate(() => JSON.stringify(__game.held.L.r))) === L0);
+  }
+  await pg.evaluate(() => { __game.held.L.d = 0.6; });   // (el arrastre le cambió la profundidad)
   await pg.tap('#drop'); await pg.waitForTimeout(400);
   let w = await pg.evaluate(() => { const w = __game.works.find(x => x.id === 'c1'); return { d: w.d, caras: w.caras && w.caras.length, c: w.c }; });
   ok('soltada: es una caja de 60 cm ' + JSON.stringify(w), Math.abs(w.d - 0.6) < 1e-9 && w.caras === 6);

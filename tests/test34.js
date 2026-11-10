@@ -95,6 +95,26 @@ const root = path.resolve(process.argv[2] || '.'), out = path.join(__dirname, 'o
     await pg.screenshot({ path: out + `v108_guias_${p * 100}.png` });
   }
   ok('dibujos por cuadro con las guías ' + JSON.stringify(dib), dib[1] > 0 && dib[0.5] > dib[1] && dib[0.25] < 1200 && dib[0.5] < 1200);
+  // v10.29 (pedido de José): las líneas de cada metro, más gruesas; las de 50/25 cm, solo en el plano de la foto
+  const lineas = await pg.evaluate(() => {
+    const orig = window.drawQuad, rec = [];
+    window.drawQuad = (...a) => { rec.push(Array.from(a[1])); return orig(...a); };
+    const p = previewPose(basis());
+    try { guiasGrilla(p, [1, 1, 1]); } finally { window.drawQuad = orig; }
+    const n = (() => { const v = [p.r[1] * p.u[2] - p.r[2] * p.u[1], p.r[2] * p.u[0] - p.r[0] * p.u[2], p.r[0] * p.u[1] - p.r[1] * p.u[0]]; return v.map(Math.abs); })();
+    const t = n.indexOf(Math.max(...n)), plano = p.c[t];
+    return rec.map(d => {
+      const v = i => [d[i * 5], d[i * 5 + 1], d[i * 5 + 2]];
+      const c = [0, 1, 2].map(k => (v(0)[k] + v(4)[k]) / 2), dir = [0, 1, 2].map(k => v(0)[k] - v(2)[k]), ancho = Math.hypot(...[0, 1, 2].map(k => v(1)[k] - v(0)[k]));
+      const e = dir.map(Math.abs).indexOf(Math.max(...dir.map(Math.abs)));
+      const otros = [0, 1, 2].filter(k => k !== e), ent = x => Math.abs(x - Math.round(x)) < 1e-3;
+      const dist = Math.hypot(...[0, 1, 2].map(k => c[k] - __game.pos[k]));
+      return { metro: otros.every(k => ent(c[k])), enPlano: e !== t && Math.abs(c[t] - plano) < 1e-3, px: ancho / metersPerPx(Math.max(0.3, dist)) };
+    });
+  });
+  const sub = lineas.filter(l => !l.metro), met = lineas.filter(l => l.metro && l.px < 2);
+  ok(`50 cm: las de 50 cm solo en el plano de la foto (${sub.length} líneas, ${sub.filter(l => !l.enPlano).length} afuera)`, sub.length > 0 && sub.every(l => l.enPlano));
+  ok('y las de cada metro más gruesas que las de 50 cm', met.length > 0 && Math.min(...met.map(l => l.px)) > Math.max(...sub.filter(l => l.px < 2).map(l => l.px)) + 0.3);   // (los 4 bordes, de 2.2, aparte)
   // una foto grande (4 x 3 m) con 25 cm: las guías van más espaciadas y no se disparan
   await pg.tap('#grilla'); await pg.waitForTimeout(100);   // 50 → 25
   await pg.evaluate(() => { const L = __game.preview; L.c = [0, -0.2, 9]; L.w = 4; L.h = 3; });

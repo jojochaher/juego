@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.28';
+const VERSION = 'v10.29';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -529,7 +529,8 @@ function agarraderas(p, n, d, m, deco) {
     if (alfa < 1) gl.disable(gl.BLEND);
   };
   const B = [1, 1, 1], Y = COLOR_RECORTE;
-  if (deco.modo === 'extruir') { aristasCaja(p, Y, deco.cara); return; }
+  if (deco.modo === 'extruir') { aristasCaja(p, Y); return; }
+  if (deco.modo === 'cara') { aristasCaja(p, B, deco.cara, true); return; }   // la cara elegida de la caja, ella sola (v10.29)
   const cl = k => act[k] ? Y : B;
   // el lado activo: su línea del marco, en amarillo (justo encima del marco, mismo grosor)
   const lineaActiva = () => {
@@ -572,7 +573,8 @@ function agarraderas(p, n, d, m, deco) {
 
 // extruir: las aristas de la caja en amarillo, también las de atrás (se ven a través de la foto): de frente la caja
 // tapa su propia profundidad y, sin esto, al arrastrar no se vería que crece
-function aristasCaja(p, col, sel = 0) {
+// solo: solo la cara sel (la elegida en la caja que tenés en la mano), con su borde y un velo blanco encima
+function aristasCaja(p, col, sel = null, solo = false) {
   const caras = cajaCaras(p);
   if (!caras) return;
   const n = mul(norm(cross(p.r, p.u)), -1), q = (sx, sy, sz) => add(p.c, add(add(mul(p.r, sx * p.w / 2), mul(p.u, sy * p.h / 2)), mul(n, sz * p.d)));
@@ -586,11 +588,14 @@ function aristasCaja(p, col, sel = 0) {
   };
   let grueso = 2.5;
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) linea(q(sx, sy, 0), q(sx, sy, 1));   // de adelante para atrás
-  const vuelta = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]];
-  for (let i = 0; i < 4; i++) linea(q(...vuelta[i], 1), q(...vuelta[i + 1], 1));                    // la cara de atrás
-  const f = sel > 0 && caras[sel];
-  if (f) {                                               // la cara que se está eligiendo (v10.20): su borde en blanco, más grueso
+  if (!solo) {
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) linea(q(sx, sy, 0), q(sx, sy, 1));   // de adelante para atrás
+    const vuelta = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]];
+    for (let i = 0; i < 4; i++) linea(q(...vuelta[i], 1), q(...vuelta[i + 1], 1));                    // la cara de atrás
+  }
+  const f = sel != null && caras[sel];
+  if (f) {                                               // la cara elegida: un velo blanco y su borde en blanco, más grueso
+    drawQuad(scratch, quadData(f.c, f.r, f.u, f.w, f.h), white, [1, 1, 1], 0.18);
     const esq = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].map(([sx, sy]) => add(f.c, add(mul(f.r, sx * f.w / 2), mul(f.u, sy * f.h / 2))));
     grueso = 4.5; col = [1, 1, 1];
     for (let i = 0; i < 4; i++) linea(esq[i], esq[i + 1]);
@@ -1001,6 +1006,7 @@ function snapPose(p, P = pasoGrilla, fijo = false) {
 const guiaR = P => Math.min(1, 2 * P);
 function guiasGrilla(p, col) {
   const P = pasoGrilla, finas = P >= 1 ? 1 : P >= 0.5 ? 0.85 : 0.7;
+  const esMetro = v => Math.abs(v - Math.round(v)) < 1e-4;   // las líneas de cada metro, siempre más gruesas
   const esquina = sub(sub(p.c, mul(p.r, p.w / 2)), mul(p.u, p.h / 2));
   const otra = add(add(esquina, mul(p.r, p.w)), mul(p.u, p.h));
   const lo = [0, 1, 2].map(i => Math.min(esquina[i], otra[i])), hi = [0, 1, 2].map(i => Math.max(esquina[i], otra[i]));
@@ -1044,19 +1050,30 @@ function guiasGrilla(p, col) {
   // la grilla
   // en números enteros de pasos (así no se acumulan errores de redondeo)
   const nR = Math.ceil(GUIA_R / G - E);
-  const rango = i => { const a = Math.floor((lo[i] + E) / G) - nR, b = Math.ceil((hi[i] - E) / G) + nR; return [i === 1 ? Math.max(0, a) : a, b]; };
+  // los valores de cada eje: múltiplos de G (y, en el del grosor, el plano de la foto: con G duplicado puede no caer)
+  const valores = i => {
+    let a = Math.floor((lo[i] + E) / G) - nR; const b = Math.ceil((hi[i] - E) / G) + nR;
+    if (i === 1) a = Math.max(0, a);
+    const v = [];
+    for (let n = a; n <= b; n++) v.push(n * G);
+    if (i === t && !v.some(x => igual(x, lo[t]))) v.push(lo[t]);
+    return v;
+  };
   for (const e of [0, 1, 2]) {
-    const b = (e + 1) % 3, c = (e + 2) % 3, [b0, b1] = rango(b), [c0, c1] = rango(c);
-    for (let nb = b0; nb <= b1; nb++) for (let nc = c0; nc <= c1; nc++) {
-      const vb = nb * G, vc = nc * G;
+    const b = (e + 1) % 3, c = (e + 2) % 3, vbs = valores(b), vcs = valores(c);
+    for (const vb of vbs) for (const vc of vcs) {
       const q = [0, 0, 0]; q[b] = vb; q[c] = vc;
       const d = Math.hypot(Math.max(0, lo[b] - vb, vb - hi[b]), Math.max(0, lo[c] - vc, vc - hi[c]));
       if (d > GUIA_R - 0.05 * GUIA_R) continue;                       // a GUIA_R ya no se ve
       if (bordes.some(([be, bo, bv]) => be === e && igual(q[t], lo[t]) && igual(q[bo], bv))) continue;   // ya es un borde
       let conNucleo = true;
       if (e === t) { if (dentro(b, vb) && dentro(c, vc)) continue; }          // atraviesa la foto de frente
-      else if (dentro(3 - e - t, q[3 - e - t])) conNucleo = false;   // va por encima de la cara de la foto (o delante/detrás, a un paso: v10.8)
-      linea(e, q, 1.2 * finas, 0.3 * (1 - d / GUIA_R), conNucleo, d);
+      else if (dentro(3 - e - t, q[3 - e - t])) conNucleo = false;   // va por encima de la cara de la foto (o delante/detrás)
+      // las de cada metro se ven siempre; las de 50 y 25 cm, solo las del plano de la foto (si no, es puro ruido)
+      const metro = esMetro(vb) && esMetro(vc);
+      if (!metro && (e === t || !igual(q[t], lo[t]))) continue;
+      if (metro) linea(e, q, 1.7, 0.4 * (1 - d / GUIA_R), conNucleo, d);
+      else linea(e, q, 1.1 * finas, 0.28 * (1 - d / GUIA_R), conNucleo, d);
     }
   }
   gl.depthMask(true);
@@ -1109,17 +1126,37 @@ function extruirBy(L, dd) {
   const p = held ? heldPose(basis()) : previewPose(basis());
   const t = p.d ? 'profundidad: ' + largoTxt(p.d) : 'sin profundidad: una foto';
   if (t !== extruirTxt) { extruirTxt = t; showHint(t); }
-  if (caraSel) pintarCaras();
+  if (caraSel != null) pintarCaras();
+}
+// mientras arrastrás para extruir, la caja se ladea sola ~30° (alrededor de su centro, sobre el eje de arriba de la
+// pantalla) para que se vea el costado crecer; al soltar el dedo vuelve. Solo se dibuja ladeada: la pose no cambia.
+const LADEO = 30 * Math.PI / 180;
+let ladeo = 0;
+const extruyendo = () => mode === 'extruir' && touches.size === 1 && [...touches.values()].some(t => t.moved);
+function ladeoPaso(dt) {
+  const meta = extruyendo() ? 1 : 0;
+  ladeo += (meta - ladeo) * Math.min(1, dt * 7);
+  if (Math.abs(meta - ladeo) < 0.002) ladeo = meta;
+}
+function ladeada(p, b) {
+  if (ladeo < 0.002 || !p.d) return p;
+  const n = mul(norm(cross(p.r, p.u)), -1), centro = add(p.c, mul(n, p.d / 2));
+  const a = ladeo * LADEO * Math.min(1, p.d / 0.2), k = b.u;   // (con poca profundidad, poco: si no, salta al empezar)
+  return { ...p, c: add(centro, rotAxis(sub(p.c, centro), k, a)), r: rotAxis(p.r, k, a), u: rotAxis(p.u, k, a) };
 }
 // elegir qué lleva cada cara de la caja que tenés en la mano (v10.20, propuesta 7, parte 2): en extruir, tocar una cara
 // (sin arrastrar) la elige (su borde en blanco) y arriba de ajustar aparecen las opciones: la misma / espejada / borde /
 // color, y "a todas". Va en la pose de la mano (L.cc): se guarda al soltar con ✓, como la profundidad.
-let caraSel = 0;
+// La caja es como un modelo de caras (v10.29, pedido de José): con una caja en la mano (modo mover o girar), tocar una
+// cara la elige (resaltada ella sola) y sus opciones aparecen en la fila de edición. caraSel: null = ninguna, 0 = la de
+// adelante (la foto: "foto" le cambia la imagen; "a todas" deja las otras como ella), 1-5 = las otras (cc[caraSel - 1]).
+let caraSel = null;
 const caraOpsEl = $('caraOps');
+const modoCaras = () => mode === 'mover' || mode === 'girar';
 // qué cara de la caja en la mano está en (x, y): su número (0 = la foto) o -1 (no es una caja o no la tocaste)
 function caraEn(x, y) {
-  if (held && held.aim) return -1;
-  const b = basis(), p = held ? heldPose(b) : previewPose(b);
+  if (!held || held.aim) return -1;
+  const b = basis(), p = heldPose(b);
   const caras = cajaCaras(p);
   if (!caras) return -1;
   const d = rayoEn(x, y);
@@ -1134,21 +1171,22 @@ function caraEn(x, y) {
   });
   return best;
 }
+// tocar lo que tenés en la mano cuando es una caja: elige la cara tocada; afuera, suelta la elección
+const esCajaEnMano = () => !!held && !held.aim && !pzEsPieza() && !(held.pz && held.pz.agrupando) && !!cajaCaras(heldPose(basis()));
 function tocarCara(x, y) {
   const i = caraEn(x, y);
-  if (i < 0) { if (caraSel) { caraSel = 0; pintarCaras(); } return false; }
-  if (i === 0) {
-    caraSel = 0; pintarCaras();
-    if (!held) return false;                              // la vista previa: el toque sigue (agarrar lo que se ve a través, tocar a alguien)
-    showHint('esa es la foto · tocá otra cara (con girar la das vuelta para ver las de atrás)'); return true;
-  }
-  caraSel = i; buzz(8); pintarCaras(); extruirTxt = '';
-  showHint(CARA_NOMBRE[i] + ': elegí qué lleva');
+  if (i < 0) { if (caraSel != null) { caraSel = null; pintarCaras(); } return false; }
+  if (caraSel === i) { caraSel = null; pintarCaras(); return true; }   // otra vez la misma: la suelta
+  caraSel = i; buzz(8); pintarCaras();
+  showHint(i === 0 ? 'la foto: "foto" le cambia la imagen · con girar ves las de atrás' : CARA_NOMBRE[i] + ': elegí qué lleva');
   return true;
 }
 function setCara(t) {
-  if (!caraSel || !caraOpsEl) return;
+  if (caraSel == null || !caraOpsEl) return;
   const L = cur(), cc = (ccValida(L.cc) || 'mmmmm').split('');
+  if (t === 'todas' && caraSel === 0) {                   // desde la foto: las otras cinco, la misma imagen
+    L.cc = undefined; buzz(8); pintarCaras(); showHint('todas las caras con la foto'); return;
+  }
   if (t === 'todas') {
     const v = cc[caraSel - 1];
     if (v === 'o') {                                     // otra foto a todas: la misma imagen en las 5 (una sola textura)
@@ -1166,19 +1204,21 @@ function setCara(t) {
 }
 function pintarCaras() {
   if (!caraOpsEl) return;
-  const L = held ? (held.aim ? null : held.L) : enMano();
   // lo que se ve (con la grilla, menos de medio paso de profundidad es plana aunque L.d tenga algo)
-  const plana = !!L && !(held ? heldPose(basis()) : previewPose(basis())).d;
-  const on = !!(caraSel && L && mode === 'extruir' && ajustando && !plana);
-  if (caraSel && plana) caraSel = 0;                     // la aplanaste: no hay caras
+  const caja = esCajaEnMano();
+  if (caraSel != null && (!caja || !modoCaras())) caraSel = null;   // la aplanaste, la soltaste o cambiaste a otro modo
+  const on = caraSel != null && caja && started && !pjVista;
+  const antes = caraOpsEl.style.display !== 'none';
   caraOpsEl.style.display = on ? '' : 'none';
+  if (antes !== on) modosArriba();
   if (!on) return;
-  let t = (ccValida(L.cc) || 'mmmmm')[caraSel - 1];
+  const L = held.L, frente = caraSel === 0;
+  let t = frente ? 'f' : (ccValida(L.cc) || 'mmmmm')[caraSel - 1];
   if (t === 'o' && !ciVer(caraSel)) t = 'm';            // sin su imagen se ve como la misma
   $('caraNombre').textContent = CARA_NOMBRE[caraSel] + ':';
   for (const el of caraOpsEl.querySelectorAll('[data-t]')) {
     el.classList.toggle('on', el.dataset.t === t);
-    el.style.display = el.dataset.t === 'b' && caraSel === 1 ? 'none' : '';   // atrás no toca ningún borde de la foto
+    el.style.display = frente || (el.dataset.t === 'b' && caraSel === 1) ? 'none' : '';   // atrás no toca ningún borde de la foto
   }
   const fo = $('caraFoto');
   fo.classList.toggle('on', t === 'o');
@@ -1218,7 +1258,12 @@ function copiaCara(src, max = 768) {
 }
 let archivoCara = null;   // {i, held}: el selector de archivo se abrió para una cara (no para la foto)
 function elegirFotoCara() {
-  if (!caraSel || !puedeFotoCara()) return;
+  if (caraSel == null || !puedeFotoCara()) return;
+  if (caraSel === 0) {                                    // la de adelante: es la foto (como tocarla sin caja)
+    archivoCara = null;
+    if (tx.lista.length) { txAbrir({ held }); return; }
+    $('bloqueArchivo').click(); return;
+  }
   if (tx.lista.length) { txAbrir({ cara: caraSel, held }); return; }   // con texturas guardadas: la hoja para elegir (v10.23)
   archivoCara = { i: caraSel, held };
   $('bloqueArchivo').click();   // en el iPhone: sacar foto / fototeca / archivos
@@ -1436,7 +1481,7 @@ function releaseHold() {
 function clearWorks() {
   txCerrar();
   ciDescartar(held, held && held.work);
-  held = null; caraSel = 0;
+  held = null; caraSel = null;
   for (const w of works) { if (w.relleno) gl.deleteTexture(w.relleno.texVieja); gl.deleteTexture(w.tex); gl.deleteBuffer(w.buf); if (w.ci) ciBorrar(w.ci); }
   works.length = 0;
 }
@@ -1809,12 +1854,11 @@ const MODE_HINT = {
   recortar: 'borde o esquina: recortar · adentro: mover la imagen · dos dedos: zoom',
   escalar: 'borde: estirar a lo ancho o a lo alto · esquina: las dos cosas · dos dedos: tamaño',
   girar: 'un dedo la gira sobre su eje · dos dedos la rotan',
-  extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño · tocá una cara: qué lleva',
+  extruir: 'arrastrá para arriba: le crece profundidad para atrás (una caja) · para abajo: menos · dos dedos: tamaño',
 };
 function setMode(m) {
   if (held && (pzEsPieza() || (held.pz && held.pz.agrupando)) && m !== 'mover' && m !== 'girar') m = 'mover';   // una pieza solo se mueve y se gira (v10.24)
   mode = m; extruirTxt = '';
-  if (m !== 'extruir') caraSel = 0;
   pintarCaras();
   for (const el of modesEl.querySelectorAll('[data-m]')) el.classList.toggle('on', el.dataset.m === m);
 }
@@ -1844,7 +1888,7 @@ grillaBtn.addEventListener('click', () => {
     if (i < 0 || i >= PASOS_GRILLA.length - 1) grilla = false; else pasoGrilla = PASOS_GRILLA[i + 1];
   }
   try { localStorage.setItem('grilla', grilla ? '1' : '0'); localStorage.setItem('grillaPaso', String(pasoGrilla)); } catch (e) {}
-  paintGrilla(); buzz(8);
+  paintGrilla(); buzz(8); ui();   // (con otro paso, una caja chica puede quedar plana: sin opciones de caras)
   if (grilla) showHint(pasoGrilla >= 1 ? 'grilla de a metro, como los puntitos del piso: posición, altura, tamaño y giros de 90°'
     : 'grilla de a ' + pasoTxt(pasoGrilla) + ': posición, altura y tamaño; giros de 90°');
 });
@@ -2270,9 +2314,9 @@ function endTouch(e) {
   if (!t) return;
   touches.delete(e.pointerId);
   if (touches.size < 2) gesture = null;
-  // extruir: tocar una cara de la caja la elige (v10.20); si no tocaste la caja, sigue como siempre
-  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && mode === 'extruir' && !pjVista && touches.size === 0
-      && e.button === 0 && (held || (camOn && camReady) || bloqueOn) && tocarCara(e.clientX, e.clientY)) return;
+  // con una caja en la mano (mover o girar): tocar una cara la elige (v10.29); afuera, la suelta
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && modoCaras() && !pjVista && touches.size === 0
+      && e.button === 0 && esCajaEnMano()) { tocarCara(e.clientX, e.clientY); return; }
   // agrupando (v10.24): tocar suma o saca fotos de la pieza
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && held.pz && held.pz.agrupando && !pjVista
       && touches.size === 0 && e.button === 0) { cur(); pzTocar(e.clientX, e.clientY); return; }
@@ -2387,6 +2431,7 @@ function pantallaOk(now) {
 function draw(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  ladeoPaso(dt);
   cieloW = cieloObra();                                  // la foto que es el cielo (si hay): una vez por cuadro
   cieloBotones();
   if (held && held.aim) stepAim(dt);
@@ -2445,7 +2490,7 @@ function draw(now) {
 const COLOR_PREVIA = [1, 0.47, 0.31];
 // las agarraderas de recortar / escalar (con el lado que se está moviendo)
 const deco = () => held && held.aim ? null : modoBordes() ? { modo: mode === 'recortar' && !vacioEnMano() ? 'recortar' : 'escalar', activo: recorteActivo() }
-  : mode === 'extruir' ? { modo: 'extruir', cara: caraSel } : null;
+  : mode === 'extruir' ? { modo: 'extruir' } : caraSel != null && modoCaras() ? { modo: 'cara', cara: caraSel } : null;
 let vacioTexGL = null;
 const texVacio = () => vacioTexGL || (vacioTexGL = texture(VACIO_IMG));
 // en el editor de personaje, las fotos que quedan entre la cámara y el personaje no se dibujan (pedido de José: lo tapaban)
@@ -2535,18 +2580,19 @@ function escena(b, dt, yo) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
       tex = videoTex;
     }
-    drawFramed(tex === videoTex ? { ...p, uv: uvCentrado(p.h / p.w) } : p, tex, foto ? null : [1, 1, 1], foto ? null : deco(), ciMano());
+    const pl = foto ? p : ladeada(p, b);
+    drawFramed(tex === videoTex ? { ...pl, uv: uvCentrado(p.h / p.w) } : pl, tex, foto ? null : [1, 1, 1], foto ? null : deco(), ciMano());
     pzDibujarMano(b);                                    // las otras de la pieza (v10.24)
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
     const p = previewPose(b);
     if (grilla) guiasGrilla(p, COLOR_PREVIA);
-    drawFramed(p, videoTex, COLOR_PREVIA, deco());
+    drawFramed(ladeada(p, b), videoTex, COLOR_PREVIA, deco());
   } else if (bloqueOn && started) {                       // el bloque vacío equipado: un cuadrado gris en la mano
     const p = previewPose(b);
     if (grilla) guiasGrilla(p, COLOR_PREVIA);
-    drawFramed(p, texVacio(), COLOR_PREVIA, deco());
+    drawFramed(ladeada(p, b), texVacio(), COLOR_PREVIA, deco());
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)

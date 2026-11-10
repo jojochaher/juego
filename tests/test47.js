@@ -164,14 +164,15 @@ const DB = 'http://localhost:8472';
   // una cara de una caja: "foto" abre la hoja y la textura va en esa cara
   await pg.evaluate(() => { const w = __game.works.find(w => w.id === 'f1'); w.d = 0.6; w.rep = undefined; setBuf(w); });
   await agarrar('f1');
-  await pg.evaluate(() => { if (!ajustando) setAjustar(true); setMode('extruir'); caraSel = 2; pintarCaras(); }); await pg.waitForTimeout(100);
+  await pg.evaluate(() => { if (!ajustando) setAjustar(true); setMode('mover'); caraSel = 2; pintarCaras(); }); await pg.waitForTimeout(100);
   fc = null; pg.once('filechooser', f => { fc = f; });
   await pg.tap('#caraFoto'); await pg.waitForTimeout(300);
   ok('"foto" de una cara abre la hoja', await visto(pg, '#texHoja') && !fc);
   await pg.tap('#texLista img');
   ok('la textura va en esa cara', await espera(pg, () => __game.held && __game.held.L.cc && __game.held.L.cc[1] === 'o' && !!ciVer(2), null, 4000));
   await pg.evaluate(() => cancelHold());
-  // soltar o cancelar cierra la hoja
+  // soltar o cancelar cierra la hoja (plana: tocar una caja elige la cara, v10.29)
+  await pg.evaluate(() => { const w = __game.works.find(w => w.id === 'f1'); w.d = undefined; setBuf(w); });
   await agarrar('f1');
   await pg.touchscreen.tap(vp.width / 2, vp.height / 2); await pg.waitForTimeout(500);
   ok('(hoja abierta)', await visto(pg, '#texHoja'));

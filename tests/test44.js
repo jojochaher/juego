@@ -48,12 +48,15 @@ const DB = 'http://localhost:8442';
   const vp = pg.viewportSize();
   await pg.touchscreen.tap(vp.width / 2, vp.height / 2); await pg.waitForTimeout(1200);
   ok('agarré la caja', (await pg.evaluate(() => __game.held && __game.held.work.id)) === 'k1');
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(150);
-  ok('el cartel de extruir dice que se toca una cara', (await pg.textContent('#hint')).includes('tocá una cara'));
-  // tocar la de adelante: es la foto
+  // v10.29: la caja es un modelo de caras: en mover (sin entrar a extruir) tocar una cara la elige
+  // tocar la de adelante: la elige (es la foto: "foto" y "a todas", sin las opciones de las otras)
   await pg.touchscreen.tap(vp.width / 2, vp.height / 2); await pg.waitForTimeout(150);
-  ok('tocar la de adelante: avisa que es la foto, sin opciones', (await pg.textContent('#hint')).includes('esa es la foto') && !(await visto(pg, '#caraOps')));
-  ok('tocar no la soltó ni cambió de modo', await pg.evaluate(() => __game.held && __game.mode === 'extruir'));
+  ok('tocar la de adelante la elige (la foto)', (await pg.evaluate(() => caraSel)) === 0 && (await pg.textContent('#caraNombre')).includes('la foto'));
+  ok('la foto: "foto" y "a todas", sin la misma/espejada/borde/color', await visto(pg, '#caraFoto') && await visto(pg, '#caraTodas') && !(await visto(pg, '#caraOps [data-t="m"]')) && !(await visto(pg, '#caraOps [data-t="c"]')));
+  ok('se resalta ella sola (deco "cara")', await pg.evaluate(() => { const d = deco(); return d && d.modo === 'cara' && d.cara === 0; }));
+  ok('tocar no la soltó ni abrió el selector ni cambió de modo', await pg.evaluate(() => __game.held && __game.mode === 'mover' && !abrirArchivoHasta));
+  await pg.touchscreen.tap(vp.width / 2, vp.height / 2); await pg.waitForTimeout(150);
+  ok('tocarla otra vez la suelta', (await pg.evaluate(() => caraSel)) === null && !(await visto(pg, '#caraOps')));
   // girarla para ver un costado y tocarlo
   await pg.evaluate(() => { const L = __game.held.L; L.w = L.h = 0.5; L.d = 0.5; setDist(L, 1.2); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
   const vis = await pg.evaluate(() => {
@@ -87,7 +90,9 @@ const DB = 'http://localhost:8442';
   ok('se ve el borde de la cara elegida (deco)', await pg.evaluate(l => deco().cara === l, lado));
   const opsDentro = await pg.evaluate(() => [...document.querySelectorAll('#caraOps .pill')].every(e => { const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top > 0; }));
   ok('las opciones entran en la pantalla', opsDentro);
-  ok('las opciones no tapan los modos', await pg.evaluate(() => { const a = document.getElementById('caraOps').getBoundingClientRect(), m = document.querySelector('#modes [data-m="extruir"]').getBoundingClientRect(); return a.bottom <= m.top + 1; }));
+  ok('las opciones van arriba de la fila de edición', await pg.evaluate(() => { const a = document.getElementById('caraOps').getBoundingClientRect(), m = document.getElementById('grilla').getBoundingClientRect(); return a.bottom <= m.top + 1; }));
+  ok('en extruir no hay opciones de caras (se ladea al arrastrar)', await pg.evaluate(() => { setAjustar(true); setMode('extruir'); const r = caraSel === null && document.getElementById('caraOps').style.display === 'none'; setMode('mover'); setAjustar(false); return r; }));
+  await pg.touchscreen.tap(...(centro || [0, 0])); await pg.waitForTimeout(200);
   await pg.screenshot({ path: out + 'v10.20_caras_opciones.png' });
   // color de ese lado de la foto (costado derecho: azul; izquierdo: rojo) y el del otro lado
   const suyo = lado === 2 ? azul : rojo, otro = lado === 2 ? rojo : azul;
@@ -115,7 +120,11 @@ const DB = 'http://localhost:8442';
   ok('borde "a todas": atrás queda como estaba ' + await pg.evaluate(() => __game.held.L.cc), (await pg.evaluate(() => __game.held.L.cc)) === 'cbbbb');
   // tocar afuera cierra las opciones (y no suelta)
   await pg.touchscreen.tap(30, vp.height * 0.3); await pg.waitForTimeout(150);
-  ok('tocar afuera de la caja cierra las opciones', !(await visto(pg, '#caraOps')) && await pg.evaluate(() => !!__game.held && caraSel === 0));
+  ok('tocar afuera de la caja cierra las opciones', !(await visto(pg, '#caraOps')) && await pg.evaluate(() => !!__game.held && caraSel === null));
+  // desde la foto, "a todas": todas como ella
+  await pg.evaluate(() => { caraSel = 0; pintarCaras(); }); await pg.tap('#caraTodas'); await pg.waitForTimeout(100);
+  ok('desde la foto "a todas" las deja como ella', await pg.evaluate(() => !__game.held.L.cc));
+  await pg.evaluate(() => { __game.held.L.cc = 'cbbbb'; caraSel = null; pintarCaras(); });
   // aplanarla esconde las opciones
   await pg.evaluate(() => { caraSel = 3; pintarCaras(); });
   ok('opciones abiertas', await visto(pg, '#caraOps'));
@@ -176,28 +185,15 @@ const DB = 'http://localhost:8442';
   // al recargar
   await pg.reload(); await pg.waitForTimeout(300); await pg.tap('#start'); await pg.waitForTimeout(1500);
   ok('al recargar la caja tiene sus caras', await pg.evaluate(() => { const w = __game.works.find(x => x.id === 'k1'); return w && w.cc === 'ecbmc' && w.caras && w.caras[3].t === 'b'; }));
-  // la cámara extruida: elegir una cara de la vista previa y sacar una foto-caja con esa cara
+  // la cámara extruida: sus caras van con la foto-caja que saca (elegirlas es con algo en la mano: v10.29)
   if (!(await pg.evaluate(() => __game.camOn))) { await pg.tap('#equip'); }
   await espera(pg, () => __game.camReady && __game.camOn, null, 5000);
   await pg.evaluate(() => { __game.pos[0] = 0; __game.pos[2] = 3; __game.look(180, 0); }); await pg.waitForTimeout(200);
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(100);
-  await pg.evaluate(() => { const L = __game.preview; L.d = 0.4; L.w = 0.5; L.h = 0.4; setDist(L, 1.2); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
-  const pv = await pg.evaluate(() => { const p = previewPose(basis()), cs = cajaCaras(p), P = __game.pos; for (const i of [2, 3]) { const f = cs[i], n = cross(f.r, f.u), v = [0, 1, 2].map(k => P[k] - f.c[k]); if (n[0] * v[0] + n[1] * v[1] + n[2] * v[2] > 0.05) return { i, c: f.c }; } return null; });
-  ok('la vista previa girada muestra un costado', !!pv);
-  const qv = pv && await enCara(pv.i, 0);
-  const qf = await enCara(0, 0);
-  ok('tocar la cara de adelante de la vista previa no se come el toque (sigue para agarrar lo de atrás)', !!qf && await pg.evaluate(q => tocarCara(...q) === false, qf));
-  ok('y se lo puede tocar', !!qv);
-  if (qv) {
-    await pg.touchscreen.tap(...qv); await pg.waitForTimeout(150);
-    ok('tocar el costado de la vista previa lo elige (sin agarrar nada)', await pg.evaluate(i => caraSel === i && !__game.held, pv.i) && await visto(pg, '#caraOps'));
-    await pg.tap('#caraOps [data-t="c"]'); await pg.waitForTimeout(100);
-    await pg.screenshot({ path: out + 'v10.20_vista_previa.png' });
-    await pg.tap('#shoot'); await pg.waitForTimeout(300);
-    const w = await pg.evaluate(() => { const w = __game.works[__game.works.length - 1]; return { id: w.id, cc: w.cc, d: w.d }; });
-    ok('la foto-caja sale con esa cara de color ' + JSON.stringify(w), w.cc && w.cc[pv.i - 1] === 'c' && Math.abs(w.d - 0.4) < 1e-6);
-    ok('y se guarda así', await espera(pg, ([id, cc]) => { if (!window.__g) { window.__g = 1; store('readonly', s => s.get(id)).then(r => { window.__gr = r; window.__g = 0; }); } return window.__gr && window.__gr.cc === cc; }, [w.id, w.cc], 4000));
-  }
+  await pg.evaluate(() => { const L = __game.preview; L.d = 0.4; L.w = 0.5; L.h = 0.4; L.cc = 'mcmmm'; setDist(L, 1.2); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
+  await pg.tap('#shoot'); await pg.waitForTimeout(300);
+  const w = await pg.evaluate(() => { const w = __game.works[__game.works.length - 1]; return { id: w.id, cc: w.cc, d: w.d }; });
+  ok('la foto-caja sale con las caras de la vista previa ' + JSON.stringify(w), w.cc === 'mcmmm' && Math.abs(w.d - 0.4) < 1e-6);
+  ok('y se guarda así', await espera(pg, ([id, cc]) => { if (!window.__g) { window.__g = 1; store('readonly', s => s.get(id)).then(r => { window.__gr = r; window.__g = 0; }); } return window.__gr && window.__gr.cc === cc; }, [w.id, w.cc], 4000));
   // el bloque vacío equipado: pone cajas con sus caras
   await pg.evaluate(() => { __game.previewBloque.d = 0.4; __game.previewBloque.cc = 'mmmcc'; setBloque(true); });
   await pg.waitForTimeout(200);

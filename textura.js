@@ -53,7 +53,7 @@ async function txGuardar() {
   catch (err) { showHint('no pude guardar la textura'); diag('texturas: no pude guardar (' + (err && err.message) + ')'); return; }
   tx.lista.unshift(e);
   buzz(15);
-  showHint('guardada en tus texturas (' + tx.lista.length + ') · tocá lo que tengas en la mano para usarla');
+  showHint('guardada en tus texturas (' + tx.lista.length + ') · para usarla, tocá una foto en la mano (en una caja: su cara → "foto")');
 }
 
 // abrir la hoja para elegir: para = {cara: i, held} (la foto de una cara) o {held} (llenar / cambiar la imagen)

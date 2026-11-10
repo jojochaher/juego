@@ -49,7 +49,7 @@ const DB = 'http://localhost:8452';
   const vp = pg.viewportSize();
   await pg.touchscreen.tap(vp.width / 2, vp.height / 2); await pg.waitForTimeout(1200);
   ok('agarré la caja', (await pg.evaluate(() => __game.held && __game.held.work.id)) === 'k1');
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(150);
+  await pg.waitForTimeout(150);   // v10.29: las caras se eligen en mover
   await pg.evaluate(() => { const L = __game.held.L; L.w = L.h = 0.5; L.d = 0.5; setDist(L, 1.2); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
   const lado = await pg.evaluate(() => {
     const p = heldPose(basis()), cs = cajaCaras(p), P = __game.pos;
@@ -74,7 +74,7 @@ const DB = 'http://localhost:8452';
   ok('el costado elegido', (await pg.evaluate(() => caraSel)) === lado);
   ok('la opción "foto" está', await visto(pg, '#caraFoto'));
   ok('las opciones (con foto) entran en la pantalla', await pg.evaluate(() => [...document.querySelectorAll('#caraOps .pill')].every(e => { const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top > 0; })));
-  ok('y no tapan los modos', await pg.evaluate(() => { const a = document.getElementById('caraOps').getBoundingClientRect(), m = document.querySelector('#modes [data-m="extruir"]').getBoundingClientRect(); return a.bottom <= m.top + 1; }));
+  ok('y van arriba de la fila de edición', await pg.evaluate(() => { const a = document.getElementById('caraOps').getBoundingClientRect(), m = document.getElementById('grilla').getBoundingClientRect(); return a.bottom <= m.top + 1; }));
   const antes = await pxCara(lado);
   ok('antes, el costado lleva la misma (' + antes + ')', rojo(antes) || azul(antes));
   ok('"foto" abre el selector de archivo', await elegir(pg));
@@ -92,7 +92,7 @@ const DB = 'http://localhost:8452';
   ok('cancelar: nada guardado', !(await pg.evaluate(l => store('readonly', s => s.get('k1~c' + l)), lado)));
   // otra vez, y soltar con ✓
   await pg.evaluate(() => { if (ajustando) setAjustar(false); pick(__game.works.find(w => w.id === 'k1')); }); await pg.waitForTimeout(1200);
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(150);
+  await pg.waitForTimeout(150);   // v10.29: las caras se eligen en mover
   await pg.evaluate(() => { const L = __game.held.L; L.w = L.h = 0.5; L.d = 0.5; setDist(L, 1.2); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
   await pg.touchscreen.tap(...((await enCara(lado)) || [0, 0])); await pg.waitForTimeout(200);
   await elegir(pg);
@@ -118,7 +118,7 @@ const DB = 'http://localhost:8452';
   ok('y se ve amarilla (' + c + ')', amarillo(c));
   // a todas: la misma imagen en las 5, una sola textura
   await pg.evaluate(() => { __game.pos[0] = 0; __game.pos[2] = 0; __game.look(0, 0); pick(__game.works.find(w => w.id === 'k1')); }); await pg.waitForTimeout(1200);
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(150);
+  await pg.waitForTimeout(150);   // v10.29: las caras se eligen en mover
   await pg.evaluate(l => { caraSel = l; pintarCaras(); }, lado);
   ok('la cara cargada se marca "foto"', await pg.evaluate(() => document.getElementById('caraFoto').classList.contains('on')));
   await pg.tap('#caraTodas'); await pg.waitForTimeout(100);
@@ -147,7 +147,7 @@ const DB = 'http://localhost:8452';
   const vid = await pg.evaluate(() => { const w = __game.works[__game.works.length - 1]; return w.vacio && w.d === 0.5 ? w.id : null; });
   ok('puse un bloque vacío extruido', !!vid);
   await pg.evaluate(id => { setBloque(false); pick(__game.works.find(w => w.id === id)); }, vid); await pg.waitForTimeout(1200);
-  await pg.tap('#ajustar'); await pg.tap('#modes [data-m="extruir"]'); await pg.waitForTimeout(150);
+  await pg.waitForTimeout(150);   // v10.29: las caras se eligen en mover
   await pg.evaluate(() => { const L = __game.held.L; setDist(L, 1.4); spinBy(L, 0.75, 0); }); await pg.waitForTimeout(200);
   const lv = await pg.evaluate(() => { const p = heldPose(basis()), cs = cajaCaras(p), P = __game.pos; for (const i of [2, 3]) { const f = cs[i], n = cross(f.r, f.u), v = [0, 1, 2].map(k => P[k] - f.c[k]); if (n[0] * v[0] + n[1] * v[1] + n[2] * v[2] > 0.05) return i; } return 0; });
   await pg.touchscreen.tap(...((await enCara(lv)) || [0, 0])); await pg.waitForTimeout(200);
@@ -167,8 +167,8 @@ const DB = 'http://localhost:8452';
   ok('borrada: sin registros de sus caras', await pg.evaluate(async id => { const k = await store('readonly', s => s.getAllKeys()); return !k.some(x => String(x).startsWith(id)); }, vid));
   // la vista previa de la cámara no ofrece "foto"
   await pg.tap('#equip'); await espera(pg, () => __game.camReady && __game.camOn, null, 5000);
-  await pg.evaluate(() => { const L = __game.preview; L.d = 0.4; L.w = 0.5; L.h = 0.4; setDist(L, 1.2); spinBy(L, 0.75, 0); caraSel = 2; if (!ajustando) setAjustar(true); setMode('extruir'); caraSel = 2; pintarCaras(); });
-  ok('la vista previa: sin "foto"', await visto(pg, '#caraOps') && !(await visto(pg, '#caraFoto')));
+  await pg.evaluate(() => { const L = __game.preview; L.d = 0.4; L.w = 0.5; L.h = 0.4; setDist(L, 1.2); spinBy(L, 0.75, 0); caraSel = 2; pintarCaras(); });
+  ok('la vista previa: sin opciones de caras (v10.29: solo con algo en la mano)', !(await visto(pg, '#caraOps')) && (await pg.evaluate(() => caraSel)) === null);
   ok('museo: sin errores de dibujo', !(await pg.textContent('#hint')).includes('error'));
   ok('museo: sin errores de JS ' + pg.errs, pg.errs.length === 0);
   await ctx.close();
@@ -186,7 +186,7 @@ const DB = 'http://localhost:8452';
   const f1 = await A.evaluate(() => __game.works[__game.works.length - 1].id);
   await espera(A, id => __game.sala.idsSala && __game.sala.idsSala.has(id), f1, 5000);
   await A.evaluate(id => pick(__game.works.find(w => w.id === id)), f1); await A.waitForTimeout(1200);
-  await A.evaluate(() => { if (!ajustando) setAjustar(true); setMode('extruir'); caraSel = 2; pintarCaras(); });
+  await A.evaluate(() => { if (!ajustando) setAjustar(true); setMode('mover'); caraSel = 2; pintarCaras(); });
   ok('sala: con una cara elegida, está "foto" (v10.22)', await visto(A, '#caraOps') && await visto(A, '#caraFoto'));
   await A.evaluate(() => cancelHold());
   const dd = (((await (await fetch(DB + '/__dump')).json()) || {}).salas || {})[H] || {};
