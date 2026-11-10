@@ -87,6 +87,16 @@ function pzFijarL() {
   if (!grilla || !held || held.aim) return;
   const b = basis(), p = snapPose(worldPose(b, held.L));
   Object.assign(held.L, { c: toLocalV(b, sub(p.c, pos)), r: toLocalV(b, p.r), u: toLocalV(b, p.u), w: p.w, h: p.h, d: p.d });
+  if (held.pz && held.pz.fijo) held.pz.fijo = pzRef(p);   // agrupando: queda quieta donde quedó alineada
+}
+// agrupando (v10.30, pedido de José): todo queda quieto en el mundo, también la principal, así te movés y vas tocando las
+// partes. Cada cuadro la principal vuelve a su lugar fijo (held.L se recalcula desde ahí); al salir de agrupar, queda en
+// la mano tal como está respecto de vos y te la llevás entera.
+function pzQuieta(b) {
+  const p = pzDe(held);
+  if (!p || !p.agrupando || !p.fijo || held.aim) return;
+  const f = p.fijo;
+  Object.assign(held.L, { c: toLocalV(b, sub(f.c, pos)), r: toLocalV(b, f.r), u: toLocalV(b, f.u) });
 }
 function pzAgrupar() {
   if (!held || held.work.rota) return;
@@ -97,8 +107,13 @@ function pzAgrupar() {
   p.agrupando = !p.agrupando;
   if (p.agrupando) {
     if (mode !== 'mover' && mode !== 'girar') setMode('mover');
-    showHint('tocá las fotos o cajas que van con esta (tocá otra vez una para sacarla) · ✓ suelta la pieza');
-  } else showHint(pzEsPieza() ? 'se mueven juntas · ✓ para soltar la pieza' : 'sola: no agrupaste ninguna');
+    if (pzEsPieza() || grilla) pzFijarL();
+    p.fijo = pzRef(heldPose(basis()));                    // todo queda quieto: también la principal
+    showHint('todo queda quieto: caminá y tocá las fotos o cajas que van con esta (otra vez: la sacás) · tocá "agrupando" para llevártela');
+  } else {
+    p.fijo = null;                                        // desde acá se mueve con vos: la pieza entera
+    showHint(pzEsPieza() ? 'la tenés entera: se mueve con vos · ✓ para soltarla' : 'sola: no agrupaste ninguna');
+  }
   buzz(10);
   ui();
 }
@@ -111,6 +126,7 @@ function pzSeparar() {
 }
 // un toque mientras se agrupa: una de la mano → se saca; una de afuera → se suma (con toda su pieza, si tiene)
 function pzTocar(x, y) {
+  pzQuieta(basis());
   const p = pzNueva(), b = basis(), main = pzPrincipal(b), d = rayoEn(x, y);
   // ¿una de la mano? el rayo, llevado a donde está guardada cada una
   let best = null, bt = Infinity;
@@ -175,6 +191,32 @@ function pzDibujarMano(b) {
   for (const e of l) if (!otros.has(e.w.id)) pzDibujar(e.w, pzT(e.ref, main));   // (si otro la agarró, se ve en su mano)
 }
 function pzFantasmas() { for (const e of pzLista()) drawObra(e.w, 0.35); }
+// el contorno de cada parte (agrupando y con una pieza en la mano, v10.30): en amarillo, por encima de todo, así se ve qué
+// partes van. La principal también. Sin prueba de profundidad (las de atrás se ven a través).
+function pzContornos(b) {
+  const p = pzDe(held);
+  if (!p || held.aim || !(p.agrupando || pzEsPieza())) return;
+  const main = pzPrincipal(b), poses = [main];
+  for (const e of pzLista()) { const T = pzT(e.ref, main); if (pzOk(T)) poses.push({ ...e.w, ...pzMover(e.w, T) }); }
+  const col = [1, 0.85, 0.2];
+  const linea = (a, c, g) => {
+    const dir = sub(c, a), largo = len(dir);
+    if (largo < 1e-4) return;
+    const mid = add(a, mul(dir, 0.5)), t = mul(dir, 1 / largo);
+    const lado = cross(t, sub(mid, pos));
+    if (len(lado) < 1e-6) return;
+    drawQuad(scratch, quadData(mid, norm(lado), t, metersPerPx(Math.max(0.2, len(sub(mid, pos)))) * g, largo), white, col, 0.95);
+  };
+  const dt = gl.isEnabled(gl.DEPTH_TEST);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  try {
+    for (const q of poses) for (const f of cajaCaras(q) || [q]) {
+      const es = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].map(([sx, sy]) => add(f.c, add(mul(f.r, sx * f.w / 2), mul(f.u, sy * f.h / 2))));
+      for (let i = 0; i < 4; i++) linea(es[i], es[i + 1], 2.5);
+    }
+  } finally { gl.disable(gl.BLEND); if (dt) gl.enable(gl.DEPTH_TEST); }
+}
 // lo que otro tiene en la mano (sala): las otras de la pieza de su principal w, movidas como ella (de su pose guardada a pose)
 function pzDibujarDeOtro(w, pose) {
   const g = grValido(w.gr);

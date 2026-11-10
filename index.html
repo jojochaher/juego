@@ -230,6 +230,9 @@
   #texHoja.quitando #texLista img { outline: 2px solid rgba(255,90,70,0.95); outline-offset: -2px; opacity: 0.75; }
   #texHoja .nota { font-size: 12px; color: rgba(255,255,255,0.6); }
   #texQuitar.on { background: rgba(255,90,70,0.9); color: #fff; }
+  #texCambiar.on { background: rgba(255,255,255,0.9); color: #111; }
+  #texHoja.cambiando #texLista img { outline: 2px solid rgba(255,217,51,0.95); outline-offset: -2px; }
+  #texLista img.elegida { outline: 4px solid rgba(255,217,51,1) !important; opacity: 1 !important; }
   /* biblioteca de piezas (v10.25) */
   #pzLista { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; max-height: 42vh; overflow-y: auto; }
   #pzLista .pz { position: relative; cursor: pointer; }
@@ -360,7 +363,8 @@
 <div id="texHoja" class="hojaAbajo" style="display:none">
   <div class="fila"><b>tus texturas</b><span id="texNota" class="nota"></span><div id="texCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>
   <div id="texLista"></div>
-  <div class="fila"><div id="texArchivo" class="pill">cámara o galería</div><div id="texQuitar" class="pill">quitar</div></div>
+  <div class="fila"><div id="texArchivo" class="pill">cámara o galería</div><div id="texVacio" class="pill" style="display:none">vacío</div><div id="texCambiar" class="pill">cambiar imagen</div><div id="texQuitar" class="pill">quitar</div></div>
+  <div id="texCambioOps" class="fila" style="display:none"><span class="nota">cambiarla por:</span><div id="texCambioArchivo" class="pill">cámara o galería</div><div id="texCambioMano" class="pill">la que tenés en la mano</div><div id="texCambioNo" class="pill">no</div></div>
 </div>
 <div id="pzHoja" class="hojaAbajo" style="display:none">
   <div class="fila"><b>tus piezas</b><span id="pzNota" class="nota"></span><div id="pzCerrar" class="pill blanco" style="margin-left:auto">cerrar</div></div>

@@ -62,7 +62,7 @@ const DB = 'http://localhost:8482';
   await pg.evaluate(() => pick(__game.works.find(w => w.id === 'a'))); await pg.waitForTimeout(1200);
   ok('con una foto en la mano está "agrupar"', await visto(pg, '#agrupar') && !(await visto(pg, '#separar')));
   await pg.tap('#agrupar');
-  ok('agrupando: el botón lo dice y avisa cómo', (await pg.textContent('#agrupar')).includes('agrupando') && (await pg.textContent('#hint')).includes('tocá las fotos'));
+  ok('agrupando: el botón lo dice y avisa cómo', (await pg.textContent('#agrupar')).includes('agrupando') && (await pg.textContent('#hint')).includes('tocá las fotos') && (await pg.textContent('#hint')).includes('quieto'));
   let [x, y] = await enPantalla(pg, [1, 1.6, -3]);
   await tocar(x, y);
   ok('tocar otra la suma a la mano', await pg.evaluate(() => __game.held.pz.ids.has('b')) && (await pg.textContent('#agrupar')).includes('2'));
@@ -78,9 +78,27 @@ const DB = 'http://localhost:8482';
   [x, y] = await enPantalla(pg, [0, 1.6, -3]);
   await tocar(x, y);
   ok('tocar la principal no hace nada raro', await pg.evaluate(() => __game.held.work.id === 'a' && __game.held.pz.ids.size === 2));
+  // v10.30: agrupando, todo queda quieto (también la principal): te movés y no se mueve con vos
+  const quieta = await pg.evaluate(async () => {
+    const c0 = heldPose(basis()).c.slice();
+    __game.pos[0] = 0.4; __game.pos[2] = 0.3; __game.look(10, 0);
+    await new Promise(r => setTimeout(r, 300));
+    const c1 = heldPose(basis()).c;
+    __game.pos[0] = 0; __game.pos[2] = 0; __game.look(0, 0);
+    await new Promise(r => setTimeout(r, 200));
+    return Math.hypot(c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]);
+  });
+  ok('agrupando, la principal queda quieta aunque te muevas (' + quieta.toFixed(4) + ')', quieta < 1e-3);
+  ok('agrupando: las partes elegidas tienen contorno (la principal y las dos)', await pg.evaluate(() => {
+    const orig = window.drawQuad; let n = 0;
+    window.drawQuad = (...a) => { n++; return orig(...a); };
+    try { pzContornos(basis()); } finally { window.drawQuad = orig; }
+    return n === 4 * (1 + 1 + 6);   // la principal (4 lados), la azul (4) y la caja (6 caras × 4)
+  }));
   ok('con el teclado, mientras se agrupa, no se pasa a escalar', await pg.evaluate(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit3' })); window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Digit3' })); return __game.mode === 'mover'; }));
   await pg.tap('#agrupar');
   ok('dejar de agrupar: queda la pieza en la mano, aparece "separar"', await pg.evaluate(() => !__game.held.pz.agrupando && __game.held.pz.ids.size === 2) && await visto(pg, '#separar'));
+  ok('con la pieza en la mano también tiene contorno', await pg.evaluate(() => { const orig = window.drawQuad; let n = 0; window.drawQuad = (...a) => { n++; return orig(...a); }; try { pzContornos(basis()); } finally { window.drawQuad = orig; } return n > 0; }));
   ok('con una pieza no hay vaciar / repetir / guardar textura / cielo', !(await visto(pg, '#vaciarFoto')) && !(await visto(pg, '#repetir')) && !(await visto(pg, '#aTextura')) && !(await visto(pg, '#cieloFoto')));
   await pg.tap('#ajustar'); await pg.waitForTimeout(100);
   ok('ajustar: solo girar (sin recortar, escalar, extruir ni ↺)', await visto(pg, '#modes [data-m="girar"]') && !(await visto(pg, '#modes [data-m="recortar"]')) && !(await visto(pg, '#modes [data-m="escalar"]')) && !(await visto(pg, '#modes [data-m="extruir"]')) && !(await visto(pg, '#reset')));
@@ -171,8 +189,11 @@ const DB = 'http://localhost:8482';
   await poner(pg, [[{ id: 'atras', c: [0, 1.6, -6], r: [1, 0, 0], u: [0, 1, 0], w: 2, h: 2 }, '#1040e0']]);
   await pg.evaluate(() => { __game.pos[0] = 0; __game.pos[1] = 1.6; __game.pos[2] = 0; __game.look(0, 0); addWork({ id: 'frente', c: [0, 1.6, -3], r: [1, 0, 0], u: [0, 1, 0], w: 0.6, h: 0.6 }, VACIO_IMG); pick(__game.works.find(w => w.id === 'frente')); });
   await pg.waitForTimeout(1200);
+  await espera(pg, () => __game.held && !__game.held.aim, null, 4000);
   await pg.tap('#agrupar');
+  const dbg = await pg.evaluate(() => JSON.stringify({ aim: !!__game.held.aim, p: heldPose(basis()), f: basis().f, pos: __game.pos, g: __game.grilla }));
   await pg.evaluate(() => pzTocar(innerWidth / 2, innerHeight / 2));
+  if (await pg.evaluate(() => __game.held.pz.ids.size !== 0)) console.log('DBG', dbg, await pg.textContent('#hint'));
   ok('tocar la que agarraste no suma la de atrás', await pg.evaluate(() => __game.held.pz.ids.size === 0) && (await pg.textContent('#hint')).includes('la que agarraste'));
   await pg.evaluate(() => cancelHold());
   // con una imagen nueva sin soltar, no se agrupa

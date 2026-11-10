@@ -466,6 +466,32 @@ function salaTxQuizasBorrar(g, hash) {
     }).catch(() => {});
   }, 3000);
 }
+// cambiaste la imagen de una textura (v10.30): la nueva sube una vez (otra clave) y cada bloque que la usaba manda su pose
+// con el tx nuevo y otro iv (los demás la bajan); la vieja se borra si ya nadie la nombra
+const salaTxReempSub = new Map();
+function salaTxReemplazo(w, img, viejo) {
+  const hash = sala.hash, g = w.tx, key = hash + '/' + g;
+  let sub = salaTxReempSub.get(key);
+  if (!sub) {
+    const sw = img.naturalWidth || img.width, sh = img.naturalHeight || img.height, k = Math.min(1, SALA_IMG_MAX / Math.max(sw, sh));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    sub = salaTxSubir(g, c.toDataURL('image/jpeg', 0.8), hash);
+    salaTxReempSub.set(key, sub);
+    // una tanda (los bloques de esa textura en esta sala) comparte la subida; después se olvida (otra vez se vuelve a mirar)
+    sub.then(() => setTimeout(() => salaTxReempSub.delete(key), 2000), () => salaTxReempSub.delete(key));
+  }
+  w.subiendo = true;
+  const n = w.subidaN = (w.subidaN || 0) + 1;
+  salaEnCola(w, () => sub.then(() => {
+    if (w.subidaN !== n) return;
+    w.subiendo = false;
+    if (!sala.active || sala.hash !== hash || !works.includes(w)) { salaTxQuizasBorrar(g, hash); return; }   // la nueva no la nombra nadie
+    const p = soloPose(w); delete p.vacio;
+    return salaApi('poses/' + w.id, 'PUT', p);
+  })).then(() => salaTxQuizasBorrar(viejo, hash), () => { if (w.subidaN === n) w.subiendo = false; showHint('no se pudo cambiar la textura en la sala'); });
+}
 // un cliente de antes movió un bloque con textura y le sacó tx (mandó la pose sin él, con la misma imagen: el mismo iv)
 function salaTxDeViejo(w, id, pose) {
   if (!w.tx || pose.tx || pose.vacio || !pose.iv || pose.iv !== w.iv || w.subiendo) return;

@@ -4,7 +4,7 @@
 // a la cámara. Se edita por modos: mover (escala/giro con dos dedos), recortar (bordes; adentro, pan y zoom de la
 // imagen), escalar (bordes: estirar en x o en y), girar (sobre su eje).
 // Obturador: la vista previa queda fija. Tocar una foto la agarra; ✓ suelta, ✕ cancela, tacho borra.
-const VERSION = 'v10.29';
+const VERSION = 'v10.30';
 document.getElementById('ver').textContent = VERSION;
 
 const $ = id => document.getElementById(id);
@@ -659,13 +659,14 @@ function addWork(o, img) {
   if (sala.active && !o.vacio) w.vo = salaVoValida(o.vo); // y video (v10.28): la tira se baja al acercarse
   w.d = dValida(o.d);                                    // es una caja: su profundidad (extruir, v10.19)
   w.rep = repValida(o.rep);                              // la textura repetida (biblioteca de texturas, v10.23)
-  if (sala.active && !o.vacio) w.tx = salaTxValida(o.tx); // en la sala: su imagen es una textura compartida (v10.23)
+  if (!o.vacio) w.tx = salaTxValida(o.tx);               // su imagen es una textura de la biblioteca (sala: compartida, v10.23; museo: v10.30)
   w.cc = ccConFotos(o.cc, o.co);                         // y qué lleva cada cara (v10.20; co: las que tienen su foto, v10.21)
   if (sala.active && o.cg) { w.cg = cgValida(o.cg); w.cc = ccConCg(w.cc, w.cg); }   // en la sala: las fotos de sus caras (v10.22)
   w.gr = grValido(o.gr);                                 // es parte de una pieza (agrupar, v10.24)
   setBuf(w);
   works.push(w);
   if (w.cg) salaCarasSync(w);                            // bajarlas
+  if (w.tx) txAplicar(w);                                // ¿cambiaste esa textura? (v10.30)
   return w;
 }
 
@@ -703,11 +704,33 @@ function ponerBloque() {
   if (p.d) o.d = p.d;                                    // el bloque equipado extruido: pone cajas (v10.19)
   if (p.d && p.cc) o.cc = p.cc;                          // con sus caras elegidas (v10.20)
   if (sala.active) o.de = salaDe();
+  if (bloqueTx) { ponerBloqueLleno(o, p); return; }
   addWork(o, VACIO_IMG);
   if (sala.active) salaApi('poses/' + o.id, 'PUT', soloPose(o)).catch(() => showHint('no se pudo poner el bloque en la sala'));
   else store('readwrite', s => s.put({ ...o, blob: null })).catch(() => {});
   buzz(12);
-  showHint('bloque vacío: agarralo para ponerle una foto');
+  showHint('bloque vacío: agarralo para ponerle una foto · o tocá el bloque equipado para que salga con una textura');
+}
+// el bloque cargado con una textura (v10.30): sale lleno (la imagen entera, recortada para llenar su forma, como al
+// llenarlo desde la biblioteca); en la sala, si es de la biblioteca, la imagen va una sola vez (tx)
+function ponerBloqueLleno(o, p) {
+  const bt = bloqueTx, g = bt.g;
+  delete o.vacio;
+  o.uv = uvLlena(bt.a, p.h / p.w); o.iv = Date.now();
+  if (g) o.tx = g;
+  const w = addWork(o, bt.c);
+  w.aspect = bt.a;
+  if (sala.active) salaShoot({ ...o }, bt.c, w);
+  else {
+    // el registro se escribe recién con la imagen; mientras, si lo agarrás y lo soltás, drop no lo encuentra: se escribe
+    // con la pose de ese momento (w), no la de cuando se puso
+    bt.blobP = bt.blobP || new Promise(res => bt.c.toBlob(res, 'image/jpeg', 0.85));
+    bt.blobP.then(blob => {
+      if (!blob || !works.includes(w)) return;
+      store('readwrite', s => { const q = s.get(w.id); q.onsuccess = () => { if (!q.result) s.put({ ...o, c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc, gr: w.gr, blob }); }; }).catch(() => {});
+    });
+  }
+  buzz(12);
 }
 // llenar el bloque que tenés en la mano con una imagen (foto de la cámara o de la galería). Se guarda recién al soltarlo
 // (con la pose final: si se guardaba al llenarlo, una subida lenta pisaba después la pose de soltar); cancelar lo deja vacío.
@@ -807,6 +830,19 @@ function enLoQueTenes(x, y) {
   if (t <= 0) return false;
   const q = sub(add(pos, mul(d, t)), p.c);
   return Math.abs(dot(q, p.r)) <= p.w / 2 && Math.abs(dot(q, p.u)) <= p.h / 2;
+}
+
+// lo mismo con la vista previa del ítem equipado (el bloque: tocarlo elige su textura)
+// devuelve a qué distancia del ojo la toca el rayo (0 = no la toca)
+function enLaVistaPrevia(x, y) {
+  if (held || !started) return 0;
+  const b = basis(), p = previewPose(b), d = rayoEn(x, y);
+  const n = cross(p.r, p.u), den = dot(d, n);
+  if (Math.abs(den) < 1e-6) return 0;
+  const t = dot(sub(p.c, pos), n) / den;
+  if (t <= 0) return 0;
+  const q = sub(add(pos, mul(d, t)), p.c);
+  return Math.abs(dot(q, p.r)) <= p.w / 2 && Math.abs(dot(q, p.u)) <= p.h / 2 ? t : 0;
 }
 
 // ---------- lo que tenés en la mano ----------
@@ -1259,6 +1295,7 @@ function copiaCara(src, max = 768) {
 let archivoCara = null;   // {i, held}: el selector de archivo se abrió para una cara (no para la foto)
 function elegirFotoCara() {
   if (caraSel == null || !puedeFotoCara()) return;
+  txArchivoPara = null;
   if (caraSel === 0) {                                    // la de adelante: es la foto (como tocarla sin caja)
     archivoCara = null;
     if (tx.lista.length) { txAbrir({ held }); return; }
@@ -1488,6 +1525,7 @@ function clearWorks() {
 
 function drop() {
   if (!held) return;
+  pzQuieta(basis());                                     // agrupando: la principal, donde quedó quieta (no la del cuadro anterior)
   cur();
   const w = held.work, ccAntes = w.cc, cgAntes = w.cg, pz = held.pz;
   Object.assign(w, heldPose(basis(), true));
@@ -1497,7 +1535,7 @@ function drop() {
   if (relleno) { gl.deleteTexture(relleno.texVieja); w.aspect = relleno.aspectImg || w.h / w.w; }
   // museo: si la cambiás otra vez antes de que se guarde, gana la última. Otra imagen (o vacía): el sonido era del lugar de la vieja
   const txAntes = w.tx;
-  if (relleno) w.tx = relleno.vaciar || !sala.active ? undefined : salaTxValida(relleno.tx);   // otra imagen: ¿es una textura? (v10.23)
+  if (relleno) w.tx = relleno.vaciar ? undefined : salaTxValida(relleno.tx);   // otra imagen: ¿es una textura? (v10.23; en el museo también desde v10.30)
   if (relleno) {
     if (sala.active) salaSonBorrar(w);   // en la sala, el sonido de la imagen vieja se borra (si no tenía, no cuesta nada)
     if (sala.active) salaVidBorrar(w);   // y su video (v10.28; aunque no sepa que tenía: un cliente viejo le pudo sacar vo)
@@ -1512,7 +1550,7 @@ function drop() {
   if (sala.active) w.cg = salaCg(w, cgAntes);            // en la sala (v10.22): las que ya están en la base; las nuevas suben después
   setBuf(w);
   const pose = { c: w.c, r: w.r, u: w.u, w: w.w, h: w.h, uv: w.uv, d: w.d, cc: w.cc, rep: w.rep, gr: w.gr };
-  const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc) };   // cc sin 'o' + co (ver ccGuardar)
+  const poseMuseo = { ...pose, cc: ccGuardar(w.cc), co: coDe(w.cc), tx: w.tx, iv: w.iv };   // cc sin 'o' + co (ver ccGuardar); tx: de qué textura salió
   if (sala.active) {
     if (relleno && relleno.vaciar) relleno.subida = salaVaciar(w);
     else if (relleno) { relleno.subida = salaShoot({ id: w.id, ...pose }, relleno.c, w); if (relleno.son) sonPegar(w, relleno.son, relleno.subida); }
@@ -1534,6 +1572,7 @@ function drop() {
   }
   buzz(12);
   releaseHold();
+  txAplicar(w);                                          // si mientras la tenías cambiaste su textura (v10.30)
 }
 function cancelHold() { if (held) { buzz(8); releaseHold(); } }
 function trash() {
@@ -2018,7 +2057,13 @@ $('bloqueArchivo').addEventListener('change', async e => {
   if (!f) return;
   const url = URL.createObjectURL(f), img = new Image();
   const ac = archivoCara; archivoCara = null;
-  try { img.src = url; await img.decode(); if (ac && ac.held === held && held) llenarCara(img, ac.i); else if (!ac) llenarBloque(img); }
+  const ap = txArchivoPara; txArchivoPara = null;         // para la biblioteca: cambiar una textura o el bloque equipado (v10.30)
+  try {
+    img.src = url; await img.decode();
+    if (ap && ap.tipo === 'tx') txReemplazar(ap.e, img);
+    else if (ap && ap.tipo === 'bloque') bloqueTxDe(img, null);
+    else if (ac && ac.held === held && held) llenarCara(img, ac.i); else if (!ac) llenarBloque(img);
+  }
   catch (err) { showHint('no pude abrir esa imagen'); diag('bloque: no pude abrir la imagen (' + (err && err.message) + ')'); }
   finally { URL.revokeObjectURL(url); }
 });
@@ -2232,7 +2277,7 @@ function recorteDesdeLoQueSeVe(L, x, y) {
 }
 
 canvas.addEventListener('pointerdown', e => {
-  abrirArchivoHasta = 0;   // un toque nuevo: el del archivo ya no va
+  abrirArchivoHasta = 0; abrirHojaHasta = 0;   // un toque nuevo: el del archivo (o la hoja del bloque) ya no va
   if (!started) return;
   canvas.setPointerCapture(e.pointerId);
   const t = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, crop: null };
@@ -2320,6 +2365,16 @@ function endTouch(e) {
   // agrupando (v10.24): tocar suma o saca fotos de la pieza
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && held && held.pz && held.pz.agrupando && !pjVista
       && touches.size === 0 && e.button === 0) { cur(); pzTocar(e.clientX, e.clientY); return; }
+  // con el bloque equipado, tocar la vista previa abre la hoja de texturas: el bloque sale con la elegida (v10.30)
+  // (si lo que se ve más cerca es una foto o alguien, gana eso; la hoja se abre en el click que sigue: en iOS ese click
+  // podría caer sobre la hoja recién abierta)
+  if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista && bloqueOn && touches.size === 0 && e.button === 0) {
+    const tp = enLaVistaPrevia(e.clientX, e.clientY);
+    if (tp) {
+      const h = workHit(e.clientX, e.clientY), q = salaPersonaEn(e.clientX, e.clientY);
+      if ((!h || h.t > tp) && (!q || q.t > tp)) { abrirHojaHasta = performance.now() + 800; return; }
+    }
+  }
   if (e.type === 'pointerup' && !t.moved && performance.now() - t.t0 < 350 && !held && !pjVista) {
     // tocar a alguien de la sala (más cerca que la foto que hay detrás) abre "ir ahí / seguir" (v10.10)
     const h = workHit(e.clientX, e.clientY), q = touches.size === 0 ? salaPersonaEn(e.clientX, e.clientY) : null;
@@ -2330,10 +2385,11 @@ function endTouch(e) {
     abrirArchivoHasta = performance.now() + 800;   // se abre con el click que sigue (Safari solo abre un input de archivo desde un click)
   }
 }
-let abrirArchivoHasta = 0;
+let abrirArchivoHasta = 0, abrirHojaHasta = 0;
 canvas.addEventListener('click', () => {
+  if (performance.now() <= abrirHojaHasta && !held && bloqueOn) { abrirHojaHasta = 0; txAbrir({ bloque: true }); return; }   // (v10.30)
   if (performance.now() > abrirArchivoHasta || !held) return;
-  abrirArchivoHasta = 0; archivoCara = null;
+  abrirArchivoHasta = 0; archivoCara = null; txArchivoPara = null;
   if (tx.lista.length) { txAbrir({ held }); return; }   // con texturas guardadas: la hoja para elegir (v10.23)
   $('bloqueArchivo').click();   // en el iPhone abre el menú: sacar foto / fototeca / archivos
 });
@@ -2469,6 +2525,7 @@ function draw(now) {
     preview.fresh = false;
   }
 
+  pzQuieta(b);   // agrupando: la principal queda quieta en el mundo (v10.30)
   if (pjVista) {
     // editor de personaje: la cámara se va afuera y te mira (pos se usa como ojo durante el dibujo)
     // y con un campo de visión propio (el tuyo puede ser muy abierto y el personaje quedaría chiquito)
@@ -2583,6 +2640,7 @@ function escena(b, dt, yo) {
     const pl = foto ? p : ladeada(p, b);
     drawFramed(tex === videoTex ? { ...pl, uv: uvCentrado(p.h / p.w) } : pl, tex, foto ? null : [1, 1, 1], foto ? null : deco(), ciMano());
     pzDibujarMano(b);                                    // las otras de la pieza (v10.24)
+    if (!foto) pzContornos(b);                           // y el contorno de cada parte (v10.30)
   } else if (camOn && camReady && video.readyState >= 2) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoFrame());
@@ -2592,7 +2650,8 @@ function escena(b, dt, yo) {
   } else if (bloqueOn && started) {                       // el bloque vacío equipado: un cuadrado gris en la mano
     const p = previewPose(b);
     if (grilla) guiasGrilla(p, COLOR_PREVIA);
-    drawFramed(ladeada(p, b), texVacio(), COLOR_PREVIA, deco());
+    if (bloqueTx) drawFramed({ ...ladeada(p, b), uv: uvLlena(bloqueTx.a, p.h / p.w) }, bloqueTx.tex, COLOR_PREVIA, deco());   // cargado con una textura (v10.30)
+    else drawFramed(ladeada(p, b), texVacio(), COLOR_PREVIA, deco());
   }
 
   // fantasma: dónde estaba la foto antes de agarrarla (a media opacidad, encima de todo)

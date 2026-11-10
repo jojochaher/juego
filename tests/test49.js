@@ -245,9 +245,11 @@ const DB = 'http://localhost:8492';
   await A.evaluate(g => pick(__game.works.find(w => w.gr === g && w.d)), gS); await A.waitForTimeout(1200);
   ok('A: agarrar una de las nuevas trae la pieza', await A.evaluate(() => __game.held && __game.held.pz && __game.held.pz.ids.size === 3));
   await A.evaluate(() => { __game.pos[0] += 1; }); await A.waitForTimeout(300);
-  await A.tap('#drop'); await A.waitForTimeout(800);
-  const d2 = await dump();
-  ok('A la movió y en la base se movieron las 4', nuevasS.every(([id, p]) => d2.poses[id] && Math.abs(d2.poses[id].c[0] - p.c[0] - 1) < 0.02 && d2.poses[id].gr === gS));
+  await A.tap('#drop');
+  const movidas = d => nuevasS.every(([id, p]) => d.poses[id] && Math.abs(d.poses[id].c[0] - p.c[0] - 1) < 0.02 && d.poses[id].gr === gS);
+  let d2 = await dump();
+  for (let i = 0; i < 30 && !movidas(d2); i++) { await A.waitForTimeout(200); d2 = await dump(); }   // (con la máquina cargada tarda más)
+  ok('A la movió y en la base se movieron las 4', movidas(d2));
   ok('y conservan la textura compartida y la cara', conTx.every(([id]) => d2.poses[id].tx === conTx[0][1].tx) && d2.poses[cajaS[0]].cg === cajaS[1].cg);
   // borrar la pieza nueva: se van sus imágenes y la textura compartida (la original sigue)
   await A.evaluate(g => pick(__game.works.find(w => w.gr === g && w.tx)), gS); await A.waitForTimeout(1200);
